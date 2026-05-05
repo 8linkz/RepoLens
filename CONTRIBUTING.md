@@ -87,9 +87,9 @@ You specialize in identifying race conditions, data races, and unsafe concurrent
 
 ## Domain Taxonomy
 
-RepoLens organizes its 27 domains into default-mode domains (available in audit/feature/bugfix modes) and mode-specific domains (exclusive to their respective modes). See `config/domains.json` for the complete and authoritative list — it is the source of truth for domain definitions.
+RepoLens organizes its 28 domains into default-mode domains (available in audit/feature/bugfix modes) and mode-specific domains (exclusive to their respective modes). See `config/domains.json` for the complete and authoritative list — it is the source of truth for domain definitions.
 
-### Default-Mode Domains (23)
+### Default-Mode Domains (24)
 
 | Domain ID | Name | Lenses |
 |---|---|---|
@@ -116,6 +116,7 @@ RepoLens organizes its 27 domains into default-mode domains (available in audit/
 | documentation | Documentation | 4 |
 | concurrency | Concurrency | 4 |
 | toolgate | Tool Gate | 18 |
+| kubernetes | Kubernetes | 1 |
 
 ### Mode-Specific Domains (4)
 

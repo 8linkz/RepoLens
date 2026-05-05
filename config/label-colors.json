@@ -10,6 +10,7 @@
   "frontend": "1d76db",
   "observability": "fbca04",
   "devops": "b60205",
+  "kubernetes": "326ce5",
   "compliance": "d93f0b",
   "maintainability": "c5def5",
   "i18n": "bfd4f2",
