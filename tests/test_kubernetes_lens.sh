@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Tests for issue #66/#67/#68/#69/#70: kubernetes lens integration.
+# Tests for issue #66/#67/#68/#69/#70/#71: kubernetes lens integration.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,6 +22,7 @@ NETWORK_POLICIES_LENS_FILE="$SCRIPT_DIR/prompts/lenses/kubernetes/network-polici
 RESOURCE_MANAGEMENT_LENS_FILE="$SCRIPT_DIR/prompts/lenses/kubernetes/resource-management.md"
 IMAGE_SECURITY_LENS_FILE="$SCRIPT_DIR/prompts/lenses/kubernetes/image-security.md"
 INGRESS_TLS_LENS_FILE="$SCRIPT_DIR/prompts/lenses/kubernetes/ingress-tls.md"
+RBAC_LENS_FILE="$SCRIPT_DIR/prompts/lenses/kubernetes/rbac.md"
 DOMAINS_FILE="$SCRIPT_DIR/config/domains.json"
 COLORS_FILE="$SCRIPT_DIR/config/label-colors.json"
 
@@ -70,7 +71,7 @@ assert_file_exists() {
 }
 
 echo ""
-echo "=== Test Suite: kubernetes lenses (issues #66/#67/#68/#69/#70) ==="
+echo "=== Test Suite: kubernetes lenses (issues #66/#67/#68/#69/#70/#71) ==="
 echo ""
 
 assert_file_exists "security-context lens prompt exists" "$SECURITY_CONTEXT_LENS_FILE"
@@ -78,6 +79,7 @@ assert_file_exists "network-policies lens prompt exists" "$NETWORK_POLICIES_LENS
 assert_file_exists "resource-management lens prompt exists" "$RESOURCE_MANAGEMENT_LENS_FILE"
 assert_file_exists "image-security lens prompt exists" "$IMAGE_SECURITY_LENS_FILE"
 assert_file_exists "ingress-tls lens prompt exists" "$INGRESS_TLS_LENS_FILE"
+assert_file_exists "rbac lens prompt exists" "$RBAC_LENS_FILE"
 
 security_context_content=""
 if [[ -f "$SECURITY_CONTEXT_LENS_FILE" ]]; then
@@ -102,6 +104,11 @@ fi
 ingress_tls_content=""
 if [[ -f "$INGRESS_TLS_LENS_FILE" ]]; then
   ingress_tls_content="$(cat "$INGRESS_TLS_LENS_FILE")"
+fi
+
+rbac_content=""
+if [[ -f "$RBAC_LENS_FILE" ]]; then
+  rbac_content="$(cat "$RBAC_LENS_FILE")"
 fi
 
 echo ""
@@ -173,7 +180,7 @@ assert_eq "no mode field" "null" "$kubernetes_mode"
 echo ""
 echo "Test 9: Kubernetes domain contains all lenses in stable order"
 kubernetes_lenses="$(jq -r '.domains[] | select(.id == "kubernetes") | .lenses | join(",")' "$DOMAINS_FILE")"
-assert_eq "registered lens list" "security-context,network-policies,resource-management,image-security,ingress-tls" "$kubernetes_lenses"
+assert_eq "registered lens list" "security-context,network-policies,resource-management,image-security,ingress-tls,rbac" "$kubernetes_lenses"
 
 echo ""
 echo "Test 10: Kubernetes label color is configured"
@@ -184,7 +191,7 @@ echo ""
 echo "Test 11: Audit-like mode resolution includes all Kubernetes lenses"
 audit_lenses="$(jq -r --arg mode "audit" \
   '.domains | sort_by(.order)[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy") elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content") end) | .id as $d | .lenses[] | $d + "/" + .' "$DOMAINS_FILE")"
-for lens in kubernetes/security-context kubernetes/network-policies kubernetes/resource-management kubernetes/image-security kubernetes/ingress-tls; do
+for lens in kubernetes/security-context kubernetes/network-policies kubernetes/resource-management kubernetes/image-security kubernetes/ingress-tls kubernetes/rbac; do
   if grep -qxF "$lens" <<< "$audit_lenses"; then
     PASS=$((PASS + 1))
     TOTAL=$((TOTAL + 1))
@@ -201,7 +208,7 @@ echo "Test 12: Exclusive modes do not include Kubernetes lenses"
 for mode in discover deploy opensource content; do
   mode_lenses="$(jq -r --arg mode "$mode" \
     '.domains | sort_by(.order)[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy") elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content") end) | .id as $d | .lenses[] | $d + "/" + .' "$DOMAINS_FILE")"
-  for lens in kubernetes/security-context kubernetes/network-policies kubernetes/resource-management kubernetes/image-security kubernetes/ingress-tls; do
+  for lens in kubernetes/security-context kubernetes/network-policies kubernetes/resource-management kubernetes/image-security kubernetes/ingress-tls kubernetes/rbac; do
     if grep -qxF "$lens" <<< "$mode_lenses"; then
       FAIL=$((FAIL + 1))
       TOTAL=$((TOTAL + 1))
@@ -304,6 +311,37 @@ for term in \
   "backend-protocol" \
   "kubernetes_ingress_v1"; do
   assert_contains "ingress-tls mentions $term" "$term" "$ingress_tls_content"
+done
+
+echo ""
+echo "Test 22: rbac frontmatter is complete"
+assert_contains "rbac id frontmatter" "id: rbac" "$rbac_content"
+assert_contains "rbac domain frontmatter" "domain: kubernetes" "$rbac_content"
+assert_contains "rbac name frontmatter" "name: RBAC & ServiceAccount Least Privilege" "$rbac_content"
+assert_contains "rbac role frontmatter" "role: Kubernetes RBAC Security Specialist" "$rbac_content"
+
+echo ""
+echo "Test 23: rbac body has required sections"
+assert_contains "rbac expert focus section" "## Your Expert Focus" "$rbac_content"
+assert_contains "rbac hunt section" "### What You Hunt For" "$rbac_content"
+assert_contains "rbac investigate section" "### How You Investigate" "$rbac_content"
+
+echo ""
+echo "Test 24: rbac lens covers Kubernetes RBAC and ServiceAccount risks"
+for term in \
+  "ClusterRoleBinding" \
+  "RoleBinding" \
+  "cluster-admin" \
+  "ServiceAccount" \
+  "verbs: [\"*\"]" \
+  "resources: [\"*\"]" \
+  "serviceAccountName" \
+  "automountServiceAccountToken" \
+  "secrets" \
+  "pods/exec" \
+  "audit policy" \
+  "RequestResponse"; do
+  assert_contains "rbac mentions $term" "$term" "$rbac_content"
 done
 
 echo ""
