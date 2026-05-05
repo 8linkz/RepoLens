@@ -1018,18 +1018,18 @@ run_lens() {
   log_info "[$domain/$lens_id] Starting lens: $lens_name"
 
   # Snapshot issue count before loop.
-  # count_repo_issues now returns non-zero + empty stdout when gh fails;
+  # forge_issue_list_count returns non-zero + empty stdout when the forge query fails;
   # we must NOT collapse that back into 0 (it would reintroduce the silent
   # failure bug). If the baseline cannot be established, fall back to 0
   # with a prominent warning. This may over-count later deltas, which is
   # safe — at worst we trip MAX_ISSUES earlier. Under-counting was the
-  # original bug: summary claimed 0 while GitHub actually held N > 0.
+  # original bug: summary claimed 0 while the forge actually held N > 0.
   local issues_baseline=0
   if $LOCAL_MODE; then
     issues_baseline="$(count_dry_run_issues "$lens_local_dir")"
   else
     local _baseline_out=""
-    if _baseline_out="$(count_repo_issues "$REPO_OWNER/$REPO_NAME" "$lens_label")"; then
+    if _baseline_out="$(forge_issue_list_count "$REPO_OWNER/$REPO_NAME" "$lens_label")"; then
       issues_baseline="$_baseline_out"
     else
       issues_baseline=0
@@ -1086,16 +1086,16 @@ run_lens() {
     fi
 
     # Count issues created by this lens.
-    # If count_repo_issues fails (gh rate-limited, auth expired, network
+    # If forge_issue_list_count fails (rate-limited, auth expired, network
     # blip, repo gone, etc.) we MUST NOT treat that as "0 issues" — that
     # was the original bug. Reuse prev_lens_issues so the counter stays
-    # monotonic and the summary doesn't lie about what GitHub holds.
+    # monotonic and the summary doesn't lie about what the forge holds.
     local current_issue_count=""
     local count_ok=true
     if $LOCAL_MODE; then
       current_issue_count="$(count_dry_run_issues "$lens_local_dir")"
     else
-      if ! current_issue_count="$(count_repo_issues "$REPO_OWNER/$REPO_NAME" "$lens_label")"; then
+      if ! current_issue_count="$(forge_issue_list_count "$REPO_OWNER/$REPO_NAME" "$lens_label")"; then
         count_ok=false
       fi
     fi

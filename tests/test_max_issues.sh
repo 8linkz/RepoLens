@@ -22,9 +22,13 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$SCRIPT_DIR/lib/core.sh"
 source "$SCRIPT_DIR/lib/template.sh"
 source "$SCRIPT_DIR/lib/streak.sh"
 source "$SCRIPT_DIR/lib/summary.sh"
+source "$SCRIPT_DIR/lib/forge.sh"
+
+export FORGE_PROVIDER=gh
 
 PASS=0
 FAIL=0
@@ -391,23 +395,23 @@ for mode in audit feature bugfix discover; do
 done
 
 # =====================================================================
-# count_repo_issues function existence and error handling
+# forge_issue_list_count function existence and error handling
 # =====================================================================
 
 echo ""
-echo "Test 27: count_repo_issues — function exists"
-if declare -f count_repo_issues >/dev/null 2>&1; then
+echo "Test 27: forge_issue_list_count — function exists"
+if declare -f forge_issue_list_count >/dev/null 2>&1; then
   TOTAL=$((TOTAL + 1))
   PASS=$((PASS + 1))
-  echo "  PASS: count_repo_issues is defined"
+  echo "  PASS: forge_issue_list_count is defined"
 else
   TOTAL=$((TOTAL + 1))
   FAIL=$((FAIL + 1))
-  echo "  FAIL: count_repo_issues not defined"
+  echo "  FAIL: forge_issue_list_count not defined"
 fi
 
 echo ""
-echo "Test 28: count_repo_issues — returns non-zero + empty stdout when gh fails"
+echo "Test 28: forge_issue_list_count — returns non-zero + empty stdout when gh fails"
 # Previously this test asserted "0" for an unreachable repo, which encoded the
 # bug fixed in issue #116: silently swallowing gh failures as zero. New
 # contract: gh failure → function exits 1 with empty stdout so callers can
@@ -422,7 +426,7 @@ chmod +x "$_t28_fake_bin/gh"
 _t28_orig_path="$PATH"
 PATH="$_t28_fake_bin:$PATH"
 set +u
-t28_result="$(count_repo_issues "some-owner/some-repo" "some-label" 2>/dev/null)"
+t28_result="$(forge_issue_list_count "some-owner/some-repo" "some-label" 2>/dev/null)"
 t28_rc=$?
 set -u
 PATH="$_t28_orig_path"

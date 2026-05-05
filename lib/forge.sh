@@ -178,3 +178,81 @@ forge_label_create() {
       ;;
   esac
 }
+
+# forge_issue_list_count <owner/repo> <label>
+#   Counts open issues carrying <label> on the target repository.
+#   Prints the integer count on stdout and returns 0 on success.
+#   On forge CLI or JSON parsing failure, prints nothing to stdout, emits
+#   a warning diagnostic, and returns 1 so callers can distinguish "unknown"
+#   from "legitimately zero".
+#
+#   gh  -> `gh issue list -R <owner/repo> --label <label> --state open
+#          --limit 1000 --json number`, counted via jq.
+#   tea -> die "not yet implemented" (lands in #61).
+#   fj  -> die "not yet implemented" (lands in #62).
+#
+#   Both args are required; missing args are caller bugs and die loudly.
+#
+#   Depends on die() from lib/core.sh and jq being available on PATH.
+forge_issue_list_count() {
+  local repo="${1:-}" label="${2:-}"
+  [[ -n "$repo" && -n "$label" ]] \
+    || die "forge_issue_list_count: missing argument (repo='$repo' label='$label')"
+
+  case "${FORGE_PROVIDER:-}" in
+    gh)
+      local gh_err gh_out gh_rc
+      gh_err="$(mktemp 2>/dev/null)" || gh_err=""
+      if [[ -n "$gh_err" ]]; then
+        gh_out="$(gh issue list -R "$repo" --label "$label" --state open \
+          --limit 1000 --json number 2>"$gh_err")"
+        gh_rc=$?
+      else
+        gh_out="$(gh issue list -R "$repo" --label "$label" --state open \
+          --limit 1000 --json number 2>/dev/null)"
+        gh_rc=$?
+      fi
+      if [[ "$gh_rc" -ne 0 ]]; then
+        local first_err=""
+        if [[ -n "$gh_err" && -s "$gh_err" ]]; then
+          first_err="$(head -n1 "$gh_err" 2>/dev/null || true)"
+        fi
+        [[ -n "$gh_err" ]] && rm -f "$gh_err"
+        _forge_warn "forge_issue_list_count: gh failed for repo=$repo label=$label rc=$gh_rc err=${first_err:-<empty>}"
+        return 1
+      fi
+      [[ -n "$gh_err" ]] && rm -f "$gh_err"
+
+      local n
+      if ! n="$(printf '%s' "$gh_out" | jq 'length' 2>/dev/null)"; then
+        _forge_warn "forge_issue_list_count: jq failed to parse gh output for repo=$repo label=$label"
+        return 1
+      fi
+      if ! [[ "$n" =~ ^[0-9]+$ ]]; then
+        _forge_warn "forge_issue_list_count: unexpected non-integer from jq for repo=$repo label=$label: '$n'"
+        return 1
+      fi
+      printf '%s\n' "$n"
+      return 0
+      ;;
+    tea)
+      die "forge_issue_list_count: tea backend not yet implemented (see #61)"
+      ;;
+    fj)
+      die "forge_issue_list_count: fj backend not yet implemented (see #62)"
+      ;;
+    *)
+      die "forge_issue_list_count: unknown provider '${FORGE_PROVIDER:-}' (expected gh|tea|fj)"
+      ;;
+  esac
+}
+
+# Internal: delegates to log_warn when logging.sh is sourced, otherwise
+# falls back to stderr so forge wrappers remain usable in library-level tests.
+_forge_warn() {
+  if declare -F log_warn >/dev/null 2>&1; then
+    log_warn "$*"
+  else
+    printf '[WARN] %s\n' "$*" >&2
+  fi
+}

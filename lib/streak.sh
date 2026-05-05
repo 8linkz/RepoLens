@@ -55,66 +55,14 @@ check_done() {
 }
 
 # count_issues_in_output <file>
-#   Counts GitHub issue URLs in agent output (printed by `gh issue create` on success).
-#   Best-effort fallback — agents may not echo the full URL. Prefer count_repo_issues.
+#   Counts GitHub issue URLs in agent output (printed by issue creation on success).
+#   Best-effort fallback — agents may not echo the full URL. Prefer
+#   forge_issue_list_count from lib/forge.sh when querying a forge directly.
 #   Returns count on stdout.
 count_issues_in_output() {
   local file="$1"
   [[ -s "$file" ]] || { echo 0; return 0; }
   grep -oE 'https://github\.com/[^/]+/[^/]+/issues/[0-9]+' "$file" 2>/dev/null | wc -l
-}
-
-# count_repo_issues <repo> <label>
-#   Deterministically counts open issues in a repo with a given label via gh API.
-#   Prints count on stdout and returns 0 on success.
-#   On failure (gh unreachable, auth/rate-limit, malformed JSON, gh missing),
-#   prints nothing to stdout, emits a log_warn diagnostic, and returns 1.
-#   Callers MUST check the exit status — do not merge "unknown" with "zero".
-count_repo_issues() {
-  local repo="$1" label="$2"
-  local gh_err gh_out gh_rc
-  gh_err="$(mktemp 2>/dev/null)" || gh_err=""
-  if [[ -n "$gh_err" ]]; then
-    gh_out="$(gh issue list -R "$repo" --label "$label" --state open \
-      --limit 1000 --json number 2>"$gh_err")"
-    gh_rc=$?
-  else
-    gh_out="$(gh issue list -R "$repo" --label "$label" --state open \
-      --limit 1000 --json number 2>/dev/null)"
-    gh_rc=$?
-  fi
-  if [[ "$gh_rc" -ne 0 ]]; then
-    local first_err=""
-    if [[ -n "$gh_err" && -s "$gh_err" ]]; then
-      first_err="$(head -n1 "$gh_err" 2>/dev/null || true)"
-    fi
-    [[ -n "$gh_err" ]] && rm -f "$gh_err"
-    _streak_warn "count_repo_issues: gh failed for repo=$repo label=$label rc=$gh_rc err=${first_err:-<empty>}"
-    return 1
-  fi
-  [[ -n "$gh_err" ]] && rm -f "$gh_err"
-  local n
-  if ! n="$(printf '%s' "$gh_out" | jq 'length' 2>/dev/null)"; then
-    _streak_warn "count_repo_issues: jq failed to parse gh output for repo=$repo label=$label"
-    return 1
-  fi
-  if ! [[ "$n" =~ ^[0-9]+$ ]]; then
-    _streak_warn "count_repo_issues: unexpected non-integer from jq for repo=$repo label=$label: '$n'"
-    return 1
-  fi
-  printf '%s\n' "$n"
-  return 0
-}
-
-# Internal: delegates to log_warn when logging.sh is sourced, otherwise
-# falls back to writing a plain diagnostic to stderr so streak.sh remains
-# usable in isolation (e.g. from unit tests that don't source logging.sh).
-_streak_warn() {
-  if declare -F log_warn >/dev/null 2>&1; then
-    log_warn "$*"
-  else
-    printf '[WARN] %s\n' "$*" >&2
-  fi
 }
 
 # count_dry_run_issues <dir>

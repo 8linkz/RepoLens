@@ -1,0 +1,398 @@
+#!/usr/bin/env bash
+# Copyright 2025-2026 Bootstrap Academy
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Tests for issue #60 - forge_issue_list_count wrapper.
+#
+# Behavioral contract:
+#   - lib/forge.sh exports forge_issue_list_count <owner/repo> <label>.
+#   - The gh branch counts open issues through `gh issue list ... --json number`
+#     and prints the integer count on stdout.
+#   - gh/jq failures print nothing to stdout and return non-zero so callers do
+#     not collapse "unknown" into "0".
+#   - tea/fj are intentionally not implemented in this ticket and die with
+#     references to #61/#62.
+#   - No direct `gh issue list` command remains in lib/streak.sh.
+#
+# All forge calls are PATH-shadowed with a fake gh stub. No real GitHub call is
+# made, and no agent command is invoked.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+PASS=0
+FAIL=0
+TOTAL=0
+TMPDIR="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR"' EXIT
+
+assert_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  TOTAL=$((TOTAL + 1))
+  if [[ "$expected" == "$actual" ]]; then
+    PASS=$((PASS + 1))
+    echo "  PASS: $desc"
+  else
+    FAIL=$((FAIL + 1))
+    echo "  FAIL: $desc (expected='$expected' actual='$actual')"
+  fi
+}
+
+assert_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  TOTAL=$((TOTAL + 1))
+  if [[ "$haystack" == *"$needle"* ]]; then
+    PASS=$((PASS + 1))
+    echo "  PASS: $desc"
+  else
+    FAIL=$((FAIL + 1))
+    echo "  FAIL: $desc (expected to contain '$needle'; got '${haystack:0:200}')"
+  fi
+}
+
+assert_rc_zero() {
+  local desc="$1" actual="$2"
+  TOTAL=$((TOTAL + 1))
+  if [[ "$actual" -eq 0 ]]; then
+    PASS=$((PASS + 1))
+    echo "  PASS: $desc"
+  else
+    FAIL=$((FAIL + 1))
+    echo "  FAIL: $desc (expected rc=0, got rc=$actual)"
+  fi
+}
+
+assert_rc_nonzero() {
+  local desc="$1" actual="$2"
+  TOTAL=$((TOTAL + 1))
+  if [[ "$actual" -ne 0 ]]; then
+    PASS=$((PASS + 1))
+    echo "  PASS: $desc"
+  else
+    FAIL=$((FAIL + 1))
+    echo "  FAIL: $desc (expected non-zero rc, got 0)"
+  fi
+}
+
+assert_log_empty() {
+  local desc="$1" log_file="$2"
+  TOTAL=$((TOTAL + 1))
+  if [[ ! -s "$log_file" ]]; then
+    PASS=$((PASS + 1))
+    echo "  PASS: $desc"
+  else
+    FAIL=$((FAIL + 1))
+    echo "  FAIL: $desc (expected no gh invocation, got '$(cat "$log_file")')"
+  fi
+}
+
+echo ""
+echo "=== Test Suite: forge_issue_list_count (issue #60) ==="
+echo ""
+
+[[ -f "$SCRIPT_DIR/lib/forge.sh" ]] || { echo "FAIL: lib/forge.sh missing"; exit 1; }
+[[ -f "$SCRIPT_DIR/lib/core.sh" ]]  || { echo "FAIL: lib/core.sh missing"; exit 1; }
+[[ -f "$SCRIPT_DIR/lib/streak.sh" ]] || { echo "FAIL: lib/streak.sh missing"; exit 1; }
+
+FAKE_BIN="$TMPDIR/bin"
+mkdir -p "$FAKE_BIN"
+cat > "$FAKE_BIN/gh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${REPOLENS_FAKE_GH_LOG:-/dev/null}"
+if [[ -n "${REPOLENS_FAKE_GH_STDERR+x}" ]]; then
+  printf '%s\n' "$REPOLENS_FAKE_GH_STDERR" >&2
+fi
+if [[ -n "${REPOLENS_FAKE_GH_STDOUT+x}" ]]; then
+  printf '%s\n' "$REPOLENS_FAKE_GH_STDOUT"
+fi
+exit "${REPOLENS_FAKE_GH_RC:-0}"
+SH
+chmod +x "$FAKE_BIN/gh"
+
+run_wrapper() {
+  local provider="$1"; shift
+  local fn="$1"; shift
+  (
+    export PATH="$FAKE_BIN:/usr/bin:/bin:$PATH"
+    export FORGE_PROVIDER="$provider"
+    [[ -n "${REPOLENS_FAKE_GH_RC+x}" ]] && export REPOLENS_FAKE_GH_RC
+    [[ -n "${REPOLENS_FAKE_GH_LOG+x}" ]] && export REPOLENS_FAKE_GH_LOG
+    [[ -n "${REPOLENS_FAKE_GH_STDOUT+x}" ]] && export REPOLENS_FAKE_GH_STDOUT
+    [[ -n "${REPOLENS_FAKE_GH_STDERR+x}" ]] && export REPOLENS_FAKE_GH_STDERR
+    set -uo pipefail
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/lib/core.sh"
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/lib/forge.sh"
+    "$fn" "$@"
+  )
+}
+
+reset_fake_gh() {
+  unset REPOLENS_FAKE_GH_RC REPOLENS_FAKE_GH_LOG
+  unset REPOLENS_FAKE_GH_STDOUT REPOLENS_FAKE_GH_STDERR
+}
+
+# ---------------------------------------------------------------------------
+# Group 1: gh success path
+# ---------------------------------------------------------------------------
+echo "--- Group 1: gh success path ---"
+echo ""
+
+echo "Test 1: gh returns [] -> wrapper prints 0 and exits 0"
+reset_fake_gh
+REPOLENS_FAKE_GH_RC=0
+REPOLENS_FAKE_GH_STDOUT='[]'
+err_file="$TMPDIR/t1.err"
+out="$(run_wrapper gh forge_issue_list_count owner/repo audit:demo 2>"$err_file")"
+rc=$?
+err="$(cat "$err_file")"
+assert_rc_zero "empty array is a successful count" "$rc"
+assert_eq "stdout is 0 for legitimately zero open issues" "0" "$out"
+assert_eq "stderr is empty on success" "" "$err"
+
+echo ""
+echo "Test 2: gh returns two issues -> wrapper prints 2 and exits 0"
+reset_fake_gh
+REPOLENS_FAKE_GH_RC=0
+REPOLENS_FAKE_GH_STDOUT='[{"number":1},{"number":2}]'
+err_file="$TMPDIR/t2.err"
+out="$(run_wrapper gh forge_issue_list_count owner/repo audit:demo 2>"$err_file")"
+rc=$?
+assert_rc_zero "two-item array is a successful count" "$rc"
+assert_eq "stdout is 2 for two open issues" "2" "$out"
+assert_eq "stderr is empty on success" "" "$(cat "$err_file")"
+
+echo ""
+echo "Test 3: gh branch composes the expected issue-list argv"
+reset_fake_gh
+gh_log="$TMPDIR/t3-gh.log"
+: > "$gh_log"
+REPOLENS_FAKE_GH_RC=0
+REPOLENS_FAKE_GH_STDOUT='[{"number":99}]'
+REPOLENS_FAKE_GH_LOG="$gh_log"
+out="$(run_wrapper gh forge_issue_list_count owner/repo audit:demo 2>/dev/null)"
+rc=$?
+logged="$(cat "$gh_log")"
+assert_rc_zero "argv-contract call succeeds" "$rc"
+assert_eq "stdout still reflects jq length" "1" "$out"
+assert_contains "gh receives 'issue list'" "issue list" "$logged"
+assert_contains "gh receives repo selector" "-R owner/repo" "$logged"
+assert_contains "gh receives label selector" "--label audit:demo" "$logged"
+assert_contains "gh limits to open issues" "--state open" "$logged"
+assert_contains "gh keeps the 1000 issue limit" "--limit 1000" "$logged"
+assert_contains "gh requests number JSON field" "--json number" "$logged"
+
+# ---------------------------------------------------------------------------
+# Group 2: gh failure semantics
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Group 2: gh failure semantics ---"
+echo ""
+
+echo "Test 4: gh exits non-zero -> wrapper returns non-zero with empty stdout and warning"
+reset_fake_gh
+REPOLENS_FAKE_GH_RC=1
+REPOLENS_FAKE_GH_STDERR='HTTP 403: API rate limit exceeded'
+err_file="$TMPDIR/t4.err"
+out="$(run_wrapper gh forge_issue_list_count owner/repo audit:demo 2>"$err_file")"
+rc=$?
+stderr_content="$(cat "$err_file")"
+assert_rc_nonzero "gh failure is observable to caller" "$rc"
+assert_eq "stdout is empty on gh failure" "" "$out"
+assert_contains "warning mentions the repo" "owner/repo" "$stderr_content"
+assert_contains "warning mentions gh failed" "gh failed" "$stderr_content"
+
+echo ""
+echo "Test 5: gh exits 0 with non-JSON stdout -> wrapper returns non-zero with empty stdout"
+reset_fake_gh
+REPOLENS_FAKE_GH_RC=0
+REPOLENS_FAKE_GH_STDOUT='not json'
+out="$(run_wrapper gh forge_issue_list_count owner/repo audit:demo 2>/dev/null)"
+rc=$?
+assert_rc_nonzero "bad JSON is observable to caller" "$rc"
+assert_eq "stdout is empty on jq parse failure" "" "$out"
+
+echo ""
+echo "Test 5b: jq exits 0 with non-integer output -> wrapper returns non-zero with empty stdout"
+reset_fake_gh
+cat > "$FAKE_BIN/jq" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '%s\n' not-a-number
+exit 0
+SH
+chmod +x "$FAKE_BIN/jq"
+REPOLENS_FAKE_GH_RC=0
+REPOLENS_FAKE_GH_STDOUT='[{"number":1}]'
+err_file="$TMPDIR/t5b.err"
+out="$(run_wrapper gh forge_issue_list_count owner/repo audit:demo 2>"$err_file")"
+rc=$?
+rm -f "$FAKE_BIN/jq"
+assert_rc_nonzero "non-integer jq output is observable to caller" "$rc"
+assert_eq "stdout is empty on unexpected jq output" "" "$out"
+assert_contains "warning mentions unexpected non-integer" "unexpected non-integer" "$(cat "$err_file")"
+
+echo ""
+echo "Test 5c: mktemp failure preserves gh failure semantics"
+reset_fake_gh
+cat > "$FAKE_BIN/mktemp" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+chmod +x "$FAKE_BIN/mktemp"
+REPOLENS_FAKE_GH_RC=9
+REPOLENS_FAKE_GH_STDERR='hidden because stderr is discarded without mktemp'
+err_file="$TMPDIR/t5c.err"
+out="$(run_wrapper gh forge_issue_list_count owner/repo audit:demo 2>"$err_file")"
+rc=$?
+rm -f "$FAKE_BIN/mktemp"
+stderr_content="$(cat "$err_file")"
+assert_rc_nonzero "gh failure remains observable when mktemp fails" "$rc"
+assert_eq "stdout is empty when gh fails without an error tempfile" "" "$out"
+assert_contains "warning still mentions gh failed" "gh failed" "$stderr_content"
+assert_contains "warning records empty captured stderr" "err=<empty>" "$stderr_content"
+
+echo ""
+echo "Test 6: canonical caller pattern observes wrapper failure"
+reset_fake_gh
+REPOLENS_FAKE_GH_RC=2
+REPOLENS_FAKE_GH_STDERR='boom'
+caller_saw_failure=false
+caller_var=""
+if ! caller_var="$(run_wrapper gh forge_issue_list_count owner/repo audit:demo 2>/dev/null)"; then
+  caller_saw_failure=true
+fi
+TOTAL=$((TOTAL + 1))
+if $caller_saw_failure; then
+  PASS=$((PASS + 1))
+  echo "  PASS: caller's if-guard observed the failure"
+else
+  FAIL=$((FAIL + 1))
+  echo "  FAIL: caller's if-guard did not observe the failure"
+fi
+assert_eq "caller variable stays empty on failure" "" "$caller_var"
+
+echo ""
+echo "Test 7: canonical caller pattern captures count on success"
+reset_fake_gh
+REPOLENS_FAKE_GH_RC=0
+REPOLENS_FAKE_GH_STDOUT='[{"number":7},{"number":8},{"number":9}]'
+caller_var=""
+caller_rc=0
+if ! caller_var="$(run_wrapper gh forge_issue_list_count owner/repo audit:demo 2>/dev/null)"; then
+  caller_rc=1
+fi
+assert_rc_zero "caller rc remains 0 on success" "$caller_rc"
+assert_eq "caller variable contains the integer count" "3" "$caller_var"
+
+# ---------------------------------------------------------------------------
+# Group 3: provider dispatch and argument guards
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Group 3: provider dispatch and argument guards ---"
+echo ""
+
+echo "Test 8: tea backend dies with not-yet-implemented message and #61"
+reset_fake_gh
+out="$(run_wrapper tea forge_issue_list_count owner/repo audit:demo 2>&1)"
+rc=$?
+assert_rc_nonzero "tea branch exits non-zero" "$rc"
+assert_contains "tea branch says not yet implemented" "not yet implemented" "$out"
+assert_contains "tea branch references issue #61" "#61" "$out"
+
+echo ""
+echo "Test 9: fj backend dies with not-yet-implemented message and #62"
+reset_fake_gh
+out="$(run_wrapper fj forge_issue_list_count owner/repo audit:demo 2>&1)"
+rc=$?
+assert_rc_nonzero "fj branch exits non-zero" "$rc"
+assert_contains "fj branch says not yet implemented" "not yet implemented" "$out"
+assert_contains "fj branch references issue #62" "#62" "$out"
+
+echo ""
+echo "Test 10: empty FORGE_PROVIDER dies through the default arm"
+reset_fake_gh
+out="$(run_wrapper "" forge_issue_list_count owner/repo audit:demo 2>&1)"
+rc=$?
+assert_rc_nonzero "empty provider exits non-zero" "$rc"
+assert_contains "empty provider reports unknown provider" "unknown provider" "$out"
+
+echo ""
+echo "Test 11: missing repo argument dies before invoking gh"
+reset_fake_gh
+gh_log="$TMPDIR/t11-gh.log"
+: > "$gh_log"
+REPOLENS_FAKE_GH_LOG="$gh_log"
+out="$(run_wrapper gh forge_issue_list_count "" audit:demo 2>&1)"
+rc=$?
+assert_rc_nonzero "missing repo exits non-zero" "$rc"
+assert_contains "missing repo reports missing argument" "missing argument" "$out"
+assert_log_empty "missing repo does not call gh" "$gh_log"
+
+echo ""
+echo "Test 12: missing label argument dies before invoking gh"
+reset_fake_gh
+gh_log="$TMPDIR/t12-gh.log"
+: > "$gh_log"
+REPOLENS_FAKE_GH_LOG="$gh_log"
+out="$(run_wrapper gh forge_issue_list_count owner/repo "" 2>&1)"
+rc=$?
+assert_rc_nonzero "missing label exits non-zero" "$rc"
+assert_contains "missing label reports missing argument" "missing argument" "$out"
+assert_log_empty "missing label does not call gh" "$gh_log"
+
+# ---------------------------------------------------------------------------
+# Group 4: acceptance regression guard
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Group 4: acceptance regression guard ---"
+echo ""
+
+echo "Test 13: lib/streak.sh contains no direct 'gh issue list' call"
+TOTAL=$((TOTAL + 1))
+if grep -nE '\bgh issue list\b' "$SCRIPT_DIR/lib/streak.sh" >/dev/null 2>&1; then
+  FAIL=$((FAIL + 1))
+  echo "  FAIL: direct 'gh issue list' call still present in lib/streak.sh"
+  grep -nE '\bgh issue list\b' "$SCRIPT_DIR/lib/streak.sh" | sed 's/^/    /'
+else
+  PASS=$((PASS + 1))
+  echo "  PASS: no direct 'gh issue list' call remains in lib/streak.sh"
+fi
+
+echo ""
+echo "Test 14: repolens.sh uses forge_issue_list_count at the issue-count call sites"
+legacy_refs="$(grep -nF 'count_repo_issues' "$SCRIPT_DIR/repolens.sh" 2>/dev/null || true)"
+forge_call_count="$(grep -cF 'forge_issue_list_count "$REPO_OWNER/$REPO_NAME" "$lens_label"' "$SCRIPT_DIR/repolens.sh" 2>/dev/null || true)"
+TOTAL=$((TOTAL + 1))
+if [[ -z "$legacy_refs" && "$forge_call_count" -eq 2 ]]; then
+  PASS=$((PASS + 1))
+  echo "  PASS: runtime issue-count call sites use forge_issue_list_count"
+else
+  FAIL=$((FAIL + 1))
+  echo "  FAIL: expected two forge_issue_list_count call sites and no count_repo_issues references"
+  [[ -n "$legacy_refs" ]] && printf '%s\n' "$legacy_refs" | sed 's/^/    legacy: /'
+  echo "    forge_issue_list_count call count: $forge_call_count"
+fi
+
+echo ""
+echo "================================"
+echo "Results: $PASS/$TOTAL passed, $FAIL failed"
+echo "================================"
+
+if [[ "$FAIL" -gt 0 ]]; then
+  exit 1
+fi
+exit 0
