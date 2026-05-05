@@ -20,9 +20,21 @@
 | `git` | Yes | Repo validation, cloning | OS package manager (`apt install git`, `brew install git`, `nix-env -i git`) |
 | `jq` | Yes | JSON config parsing | OS package manager (`apt install jq`, `brew install jq`, `nix-env -i jq`) |
 | `timeout` (coreutils) | Yes | Per-invocation agent timeout watchdog (see `REPOLENS_AGENT_TIMEOUT` below) | Ships in GNU coreutils. Pre-installed on Linux/NixOS. On macOS: `brew install coreutils`. |
-| `gh`, `tea`, or `fj` | Yes (unless `--local`) | Remote forge operations for labels and issue queries | GitHub: [cli.github.com](https://cli.github.com) and `gh auth login`. Gitea: [gitea.com/gitea/tea](https://gitea.com/gitea/tea) and `tea login add`. Forgejo/Codeberg: [forgejo-contrib/forgejo-cli](https://codeberg.org/forgejo-contrib/forgejo-cli) and `fj -H <host> auth login` |
+| `gh`, `tea`, or `fj` | Yes (unless `--local`) | Remote forge operations for labels and issue queries | See [Supported forges](#supported-forges) for detection, install links, and auth commands |
 | Agent CLI | Yes (at least one) | Run analysis agents | See [Supported Agent CLIs](#supported-agent-clis) below for install + auth per CLI |
 | `docker` + `docker compose` | Only for `--hosted` | DAST scanning environment | OS package manager |
+
+### Supported forges
+
+Supported forges are GitHub (`gh`), Gitea (`tea`), and Codeberg/Forgejo (`fj`). RepoLens reads `git remote get-url origin` from the target project and uses the origin host to choose the forge backend. Pass `--forge <gh|tea|fj>` to override auto-detection. Use `--local` to write markdown findings without any remote forge CLI.
+
+| Forge | Provider | CLI | Auto-detection | Install / auth |
+|-------|----------|-----|----------------|----------------|
+| GitHub | `gh` | GitHub CLI | `github.com` origins | Install from [cli.github.com](https://cli.github.com), then run `gh auth login` |
+| Gitea | `tea` | Gitea Tea CLI | Hostnames containing `gitea` | Install from [gitea.com/gitea/tea](https://gitea.com/gitea/tea), then run `tea login add` |
+| Codeberg / Forgejo | `fj` | Forgejo CLI | `codeberg.org` origins | Install from [forgejo-contrib/forgejo-cli](https://codeberg.org/forgejo-contrib/forgejo-cli), then run `fj -H <host> auth login` |
+
+Self-hosted instances whose hostnames do not match the auto-detect heuristics require `--forge <gh|tea|fj>`. Self-hosted Forgejo targets also need an HTTPS or SSH `origin` remote so RepoLens can pass a secure `fj -H <host>` binding; insecure HTTP origins are not used for authenticated `fj` commands.
 
 ### Supported Agent CLIs
 
@@ -264,7 +276,7 @@ Usage: repolens.sh --project <path|url> --agent <agent> [OPTIONS]
 | `--max-issues <n>` | Stop after creating *n* total issues |
 | `--local` | Write findings as local markdown files instead of creating remote issues. No forge CLI required |
 | `--output <path>` | Output directory for local markdown files (requires `--local`, default: `logs/<run-id>/issues/`) |
-| `--forge <provider>` | Override forge auto-detection: `gh` for GitHub, `tea` for Gitea, `fj` for Forgejo/Codeberg. Codeberg is auto-detected; use this for self-hosted Gitea/Forgejo remotes whose hostname is not auto-detected. Self-hosted Forgejo needs an HTTPS or SSH `origin` remote so RepoLens can pass `fj --host` |
+| `--forge <provider>` | Override forge auto-detection: `gh` for GitHub, `tea` for Gitea, `fj` for Forgejo/Codeberg. Codeberg is auto-detected; use this for self-hosted Gitea/Forgejo remotes whose hostname is not auto-detected. Self-hosted Forgejo needs an HTTPS or SSH `origin` remote so RepoLens can pass `fj -H <host>` |
 | `--hosted` | Spin up Docker Compose for DAST scanning (used with `toolgate` domain) |
 | `--max-cost <amount>` | Warn if the **minimum cost estimate** exceeds this dollar amount (e.g., `--max-cost 10`). The estimate is a lower bound — real runs typically cost 2–5× more due to tool-call churn and iteration non-convergence. Budget accordingly. |
 | `--dry-run` | Validate config and show which lenses would run, then exit (no agents executed) |

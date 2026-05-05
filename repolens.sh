@@ -64,7 +64,7 @@ show_about() {
   echo ""
   echo "A standalone multi-lens code audit and analysis tool."
   echo "Runs expert analysis agents against any git repository or live server"
-  echo "and creates GitHub issues for real findings."
+  echo "and creates remote issues for real findings."
   echo ""
   if [[ -f "$sponsors_file" ]] && command -v jq >/dev/null 2>&1; then
     echo "Sponsors:"
@@ -78,7 +78,7 @@ usage() {
 Usage: repolens.sh --project <path> --agent <agent> [OPTIONS]
 
 RepoLens — Multi-lens code audit tool. Runs expert analysis agents against
-any git repository and creates GitHub issues for real findings.
+any git repository and creates remote issues for real findings.
 
 Required:
   --project <path|url>    Local path or remote Git URL (cloned read-only if URL)
@@ -95,7 +95,7 @@ Options:
   --resume <run-id>       Resume a previous interrupted run
   --spec <file>           Spec/PRD/roadmap to guide analysis (any text file)
   --max-issues <n>        Stop after creating n total issues (dry-run quality check)
-  --local                 Write findings as local markdown files instead of creating GitHub issues
+  --local                 Write findings as local markdown files instead of creating remote issues
   --output <path>         Output directory for local markdown files (requires --local, default: logs/<run-id>/issues/)
   --forge <provider>      gh (GitHub) | tea (Gitea) | fj (Forgejo/Codeberg) — overrides auto-detection from origin
   --hosted                Spin up project's Docker Compose in isolated network for DAST scanning and testing
@@ -810,7 +810,7 @@ confirm_run() {
   if $LOCAL_MODE; then
     echo "Findings will be written as local markdown files to: $OUTPUT_DIR"
   else
-    echo "Each agent may create GitHub issues directly."
+    echo "Each agent may create remote issues directly on the active forge."
   fi
   echo ""
   read -rp "Proceed? [y/N] " answer
@@ -871,7 +871,7 @@ confirm_autonomous_mode() {
   echo "content guardrails, or ethical guidelines."
   echo ""
   echo "Safety is enforced through prompt instructions that restrict agents"
-  echo "to read-only code analysis and 'gh issue create' commands."
+  echo "to read-only code analysis and active forge issue creation commands."
   echo ""
   read -rp "I understand what --dangerously-skip-permissions does [y/N] " answer
   case "$answer" in

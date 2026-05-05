@@ -12,6 +12,7 @@ Thank you for your interest in contributing to RepoLens — an open-source, mult
 - [Commit Messages](#commit-messages)
 - [DCO Sign-Off](#dco-sign-off)
 - [Code Style](#code-style)
+- [Forge Provider Backends](#forge-provider-backends)
 - [Running Tests](#running-tests)
 - [Reporting Bugs](#reporting-bugs)
 - [Suggesting Features](#suggesting-features)
@@ -205,6 +206,30 @@ All shell scripts in RepoLens follow these conventions:
 - Logs follow structured format: `[LEVEL] [timestamp] message`
 - Quote all variable expansions: `"$var"` not `$var`
 - Use `local` for function-scoped variables
+
+## Forge Provider Backends
+
+`lib/forge.sh` is the provider abstraction layer for remote issue, label, auth, and issue-count operations. Add or change forge backends there first; `repolens.sh` should only need provider-token validation and high-level orchestration updates when a new provider is introduced.
+
+The wrapper API that runtime code calls is:
+
+- `forge_auth_status` - verifies that the active provider CLI is installed, authenticated, and usable for the target forge
+- `forge_label_create <label> <color> <owner/repo>` - creates labels best-effort/idempotently for the active provider
+- `forge_issue_list_count <owner/repo> <label>` - returns the number of open issues for a label and exits non-zero with empty stdout when the provider query fails
+
+Adjacent prompt helpers in the same file render provider-specific commands for agents: `forge_prompt_issue_create`, `forge_prompt_label_create`, and `forge_prompt_issue_list`.
+
+### Adding a New Forge
+
+Use this adding a new forge recipe:
+
+1. Extend `detect_forge_provider` and host parsing in `lib/forge.sh` if the provider can be inferred from `git remote get-url origin`.
+2. Add `require_forge_cli` handling with a clear install hint for the provider CLI.
+3. Add case branches for `forge_auth_status`, `forge_label_create`, and `forge_issue_list_count`.
+4. Add prompt-helper branches if agents need different issue creation, label creation, or issue listing commands.
+5. Update `repolens.sh` provider validation and help text for the new provider token.
+6. Add stubbed tests under `tests/` for detection, auth, label creation, issue counting, prompt rendering, and the `--forge` override.
+7. Update README and contributor docs so users know the install, auth, auto-detection, and override behavior.
 
 ## Running Tests
 
