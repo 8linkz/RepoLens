@@ -5,7 +5,7 @@
 [![CI](https://github.com/TheMorpheus407/RepoLens/actions/workflows/ci.yml/badge.svg)](https://github.com/TheMorpheus407/RepoLens/actions/workflows/ci.yml)
 [![GitHub Stars](https://img.shields.io/github/stars/TheMorpheus407/RepoLens?style=social)](https://github.com/TheMorpheus407/RepoLens)
 
-**Multi-lens code audit tool.** Runs 280 specialist lenses across 27 domains against any git repository or live server and creates GitHub issues for real findings. Think automated code review, agent-driven pentesting, tool-driven static/dynamic analysis, and infrastructure auditing — all with deep specialization.
+**Multi-lens code audit tool.** Runs 280 specialist lenses across 27 domains against any git repository or live server and creates remote issues for real findings. Think automated code review, agent-driven pentesting, tool-driven static/dynamic analysis, and infrastructure auditing — all with deep specialization.
 
 > [!IMPORTANT]
 > **RepoLens runs AI agents with shell access against your repository, and a full audit can cost hundreds of dollars in API charges.** It is NOT a sandboxed security tool, comes with NO warranty, and you use it entirely at your own risk. **Read [Warnings & Limits](#warnings--limits) before your first run** — especially the cost and security sections.
@@ -20,7 +20,7 @@
 | `git` | Yes | Repo validation, cloning | OS package manager (`apt install git`, `brew install git`, `nix-env -i git`) |
 | `jq` | Yes | JSON config parsing | OS package manager (`apt install jq`, `brew install jq`, `nix-env -i jq`) |
 | `timeout` (coreutils) | Yes | Per-invocation agent timeout watchdog (see `REPOLENS_AGENT_TIMEOUT` below) | Ships in GNU coreutils. Pre-installed on Linux/NixOS. On macOS: `brew install coreutils`. |
-| `gh` | Yes (unless `--local`) | Create issues, labels, query repos | [cli.github.com](https://cli.github.com) — run `gh auth login` after install |
+| `gh` or `tea` | Yes (unless `--local`) | Remote forge operations for labels and issue queries | GitHub: [cli.github.com](https://cli.github.com) and `gh auth login`. Gitea: [gitea.com/gitea/tea](https://gitea.com/gitea/tea) and `tea login add` |
 | Agent CLI | Yes (at least one) | Run analysis agents | See [Supported Agent CLIs](#supported-agent-clis) below for install + auth per CLI |
 | `docker` + `docker compose` | Only for `--hosted` | DAST scanning environment | OS package manager |
 
@@ -97,8 +97,9 @@ cd RepoLens
 # 2. Make the entry point executable
 chmod +x repolens.sh
 
-# 3. Authenticate GitHub CLI (if not already done; not needed for --local)
-gh auth login
+# 3. Authenticate your forge CLI (if not already done; not needed for --local)
+gh auth login        # GitHub
+tea login add        # Gitea
 
 # 4. Run your first audit — single lens, fast feedback
 ./repolens.sh --project ~/my-app --agent claude --focus injection
@@ -132,11 +133,11 @@ You are responsible for every dollar of API spend. Know your per-token pricing.
 ### Rate Limits & Automated Traffic
 
 > [!NOTE]
-> RepoLens generates a lot of automated traffic. A 280-lens run can create dozens to hundreds of GitHub issues, plus repo reads via `gh`, plus parallel AI provider calls.
+> RepoLens generates a lot of automated traffic. A 280-lens run can create dozens to hundreds of remote issues, plus repo reads via `gh` or `tea`, plus parallel AI provider calls.
 
-- **GitHub API.** Authenticated `gh` calls count against your per-user REST and GraphQL quotas. Large runs can trip secondary (abuse) rate limits. Use `--max-issues <n>` to cap output, or `--local` to skip the GitHub API entirely.
+- **GitHub API / Gitea API.** Authenticated `gh` calls count against GitHub API quotas; authenticated `tea` calls count against your Gitea account/API quotas. Large runs can trip rate limits. Use `--max-issues <n>` to cap output, or `--local` to skip remote forge calls entirely.
 - **AI provider rate limits.** Every iteration consumes Anthropic / OpenAI tokens. Free and low-tier accounts will hit their RPM (requests-per-minute) and TPM (tokens-per-minute) ceilings immediately under `--parallel`. Verify your account is on a tier sized for concurrent agent traffic before scaling.
-- **Terms of Service & abuse risk.** Do **not** point RepoLens at repositories you do not own or have explicit permission to audit. Automated bulk issue creation against third-party repos can be treated as spam by GitHub and may get your account flagged or suspended.
+- **Terms of Service & abuse risk.** Do **not** point RepoLens at repositories you do not own or have explicit permission to audit. Automated bulk issue creation against third-party repos can be treated as spam by your forge provider and may get your account flagged or suspended.
 
 Start small with `--focus <lens-id>` or one `--domain`, then scale up with `--parallel --max-parallel 2` before raising concurrency. The default is `--max-parallel 8`.
 
@@ -171,7 +172,7 @@ That risk includes, without limitation:
 - **Missed issues** — real bugs, vulnerabilities, or misconfigurations RepoLens fails to detect.
 - **Financial cost** — API/token usage from agent CLIs (claude, codex, etc.) can accrue significant charges.
 - **Infrastructure impact** — in `deploy` mode and similar, agents execute shell commands on real systems; despite read-only prompting, unintended side effects are possible.
-- **GitHub side effects** — automated issue, label, and PR creation in your repositories.
+- **Remote forge side effects** — automated issue, label, and PR creation in your repositories.
 
 For the full legal text, see [LICENSE](LICENSE) (Apache License, Version 2.0, Sections 7 and 8).
 
@@ -220,7 +221,7 @@ RepoLens supports 8 modes. Each mode controls which domains/lenses are visible a
 # CI — skip confirmation prompt for automation
 ./repolens.sh --project ~/my-app --agent claude --parallel --yes
 
-# Local — write findings as markdown files instead of GitHub issues
+# Local — write findings as markdown files instead of remote issues
 ./repolens.sh --project ~/my-app --agent claude --local
 
 # Local with custom output directory
@@ -260,8 +261,9 @@ Usage: repolens.sh --project <path|url> --agent <agent> [OPTIONS]
 | `--resume <run-id>` | Resume a previous interrupted run |
 | `--spec <file>` | Spec/PRD/roadmap to guide analysis (any text file, max 100 KB) |
 | `--max-issues <n>` | Stop after creating *n* total issues |
-| `--local` | Write findings as local markdown files instead of creating GitHub issues. No `gh` required |
+| `--local` | Write findings as local markdown files instead of creating remote issues. No forge CLI required |
 | `--output <path>` | Output directory for local markdown files (requires `--local`, default: `logs/<run-id>/issues/`) |
+| `--forge <provider>` | Override forge auto-detection: `gh` for GitHub, `tea` for Gitea. Use this for self-hosted Gitea remotes whose hostname is not auto-detected |
 | `--hosted` | Spin up Docker Compose for DAST scanning (used with `toolgate` domain) |
 | `--max-cost <amount>` | Warn if the **minimum cost estimate** exceeds this dollar amount (e.g., `--max-cost 10`). The estimate is a lower bound — real runs typically cost 2–5× more due to tool-call churn and iteration non-convergence. Budget accordingly. |
 | `--dry-run` | Validate config and show which lenses would run, then exit (no agents executed) |
@@ -275,7 +277,7 @@ Usage: repolens.sh --project <path|url> --agent <agent> [OPTIONS]
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `REPOLENS_AGENT_TIMEOUT` | `6000` | Per-invocation agent timeout in seconds. Every agent call is wrapped with `timeout(1)` at this cap — if an agent hangs (stuck network, auth prompt, quota check in flight), the invocation is killed, the iteration is logged with `[ERROR] agent timed out after Ns`, and the lens loop continues. Lower (e.g. `600`) for quick smoke runs; raise further for deep research agents on large repos. |
-| `REPOLENS_CHILD_MAX_WAIT` | `144000` | Per-child deadline in seconds for parallel-mode workers. `wait_all` polls each background lens with `kill -0` + `sleep 1` and, if a child exceeds this deadline, sends SIGTERM (10s grace) then SIGKILL, logs `[lens_id] exceeded REPOLENS_CHILD_MAX_WAIT=Ns`, and continues reaping the remaining children. Outer safety net — the agent-level `REPOLENS_AGENT_TIMEOUT` handles the inner loop. Should be ≥ `MAX_ITERATIONS_PER_LENS × REPOLENS_AGENT_TIMEOUT` plus a buffer for non-agent I/O (`gh` queries, file locks). |
+| `REPOLENS_CHILD_MAX_WAIT` | `144000` | Per-child deadline in seconds for parallel-mode workers. `wait_all` polls each background lens with `kill -0` + `sleep 1` and, if a child exceeds this deadline, sends SIGTERM (10s grace) then SIGKILL, logs `[lens_id] exceeded REPOLENS_CHILD_MAX_WAIT=Ns`, and continues reaping the remaining children. Outer safety net — the agent-level `REPOLENS_AGENT_TIMEOUT` handles the inner loop. Should be ≥ `MAX_ITERATIONS_PER_LENS × REPOLENS_AGENT_TIMEOUT` plus a buffer for non-agent I/O (forge queries, file locks). |
 
 ## Domains & Lenses (280 total across 27 domains)
 
@@ -318,17 +320,17 @@ Usage: repolens.sh --project <path|url> --agent <agent> [OPTIONS]
 
 ## How It Works
 
-1. Validates target repo (or server for `deploy` mode), agent CLI, and `gh` auth (skipped with `--local`)
+1. Validates target repo (or server for `deploy` mode), agent CLI, and forge CLI auth (skipped with `--local`)
 2. Resolves lens list (all, `--domain`, or `--focus`)
 3. If `--dry-run`: prints mode, agent, project path, and the full lens list, then exits — no agents run and no prompts are shown
 4. For `--agent claude`: prompts for acknowledgment that `--dangerously-skip-permissions` only skips interactive permission prompts, not safety filters. `--yes` bypasses this prompt
 5. For `deploy` mode: prompts for explicit authorization confirmation (`I confirm I am authorized to audit this server [y/N]`). Displays legal references (§202a StGB, CFAA, EU Directive 2013/40/EU). `--yes` bypasses this prompt
 6. Shows confirmation prompt (target repo, mode, lens count, estimated cost) — requires `y` to proceed, or use `--yes` to skip. If `--max-cost` is set and the estimate exceeds it, a warning is displayed
-7. Ensures GitHub labels exist (skipped with `--local`)
+7. Ensures remote labels exist (skipped with `--local`)
 8. For each lens:
    - Composes prompt from base template + lens expert focus
    - Runs agent in target repo directory
-   - Agent reads code, finds issues, and creates GitHub issues via `gh` (or writes markdown files in `--local` mode)
+   - Agent reads code, finds issues, and creates remote issues (or writes markdown files in `--local` mode)
    - Loops until DONE detected (3× streak for audit/feature/bugfix, 1× for other modes)
 9. Generates `logs/<run-id>/summary.json`
 
@@ -369,7 +371,7 @@ Completed lenses are skipped. The run ID is printed at startup and found in `log
 
 ## Output
 
-- **GitHub Issues** — Created directly in the target repo with severity-prefixed titles and domain labels (default)
+- **Remote Issues** — Created directly in the target repo with severity-prefixed titles and domain labels (default)
 - **Local Markdown** — With `--local`, findings are written as individual markdown files to `<output-dir>/<domain>/<lens-id>/NNN-slug.md` with YAML frontmatter (title, severity, domain, lens, labels). Default output directory: `logs/<run-id>/issues/`
 - **Logs** — `logs/<run-id>/<domain>/<lens>/iteration-N-TIMESTAMP.txt`
 - **Summary** — `logs/<run-id>/summary.json`
@@ -435,7 +437,7 @@ RepoLens enforces read-only operation through prompt instructions, but **respons
 
 ### About `--dangerously-skip-permissions`
 
-RepoLens passes `--dangerously-skip-permissions` to the Claude agent CLI. This flag is required for autonomous operation — agents need to create GitHub issues via `gh` and read project files without interactive permission prompts. Despite its name, the flag does **not** disable safety filters, content guardrails, or ethical guidelines. Safety is enforced through detailed prompt instructions (not the CLI permissions system), which restrict agents to read-only analysis and `gh issue create` commands.
+RepoLens passes `--dangerously-skip-permissions` to the Claude agent CLI. This flag is required for autonomous operation — agents need to create remote issues and read project files without interactive permission prompts. Despite its name, the flag does **not** disable safety filters, content guardrails, or ethical guidelines. Safety is enforced through detailed prompt instructions (not the CLI permissions system), which restrict agents to read-only analysis and remote issue creation commands.
 
 When using `--agent claude`, RepoLens displays an explanation of the flag and asks for acknowledgment before running any agents. Use `--yes` to skip this prompt in CI/automation.
 
@@ -447,8 +449,10 @@ Most first-run failures fall into one of these patterns. Errors are quoted verba
 |-----------------|-------|-----|
 | `ERROR: RepoLens requires bash 4.0 or newer.` | bash < 4 (macOS ships 3.2 by default) | `brew install bash`, then re-run with the Homebrew `bash` first on `PATH` |
 | `Missing required command: jq` | jq not installed | `apt install jq` / `brew install jq` / `nix-env -i jq` |
-| `Missing required command: gh` | GitHub CLI not installed | Install from [cli.github.com](https://cli.github.com), or pass `--local` to skip GitHub entirely |
+| `Missing required command: gh` | GitHub CLI not installed for a GitHub target | Install from [cli.github.com](https://cli.github.com), or pass `--local` to skip remote issue output |
 | `gh is not authenticated. Run 'gh auth login'.` | `gh` not authenticated, or token expired | `gh auth login` (or `gh auth refresh` if your token is stale) |
+| `Missing required command: tea` | Gitea CLI not installed for a Gitea target | Install from [gitea.com/gitea/tea](https://gitea.com/gitea/tea), or pass `--local` to skip remote issue output |
+| `tea is not authenticated. Run 'tea login add'.` | `tea` has no configured login for your Gitea account | `tea login add` |
 | `Missing required command: claude` (or `codex` / `opencode`) | Agent CLI not installed | See [Supported Agent CLIs](#supported-agent-clis) for install + auth |
 | Agent prompts for login on every iteration | Agent CLI not authenticated | Authenticate the CLI directly — see [Supported Agent CLIs](#supported-agent-clis) |
 | `Invalid agent: …` | Typo in `--agent` value | Must be one of `claude`, `codex`, `spark`, `sparc`, `opencode`, `opencode/<model>` |
@@ -472,4 +476,3 @@ RepoLens is free, open source, and maintained on a best-effort basis. **We do no
 **Commercial / paid support** for companies — installation help, custom lens development, integration consulting, prioritized fixes — is available. Email [hallo@bootstrap.academy](mailto:hallo@bootstrap.academy).
 
 Supported by [Patreon patrons](https://patreon.com/themorpheus) — thank you.
-

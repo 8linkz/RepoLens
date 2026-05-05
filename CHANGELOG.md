@@ -16,7 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
-- `--local` flag: write findings as local markdown files instead of creating GitHub issues — no `gh` CLI required
+- Gitea `tea` backend for remote forge operations: RepoLens can authenticate with `tea login list`, create labels with `tea labels create --name ...`, and count matching open issues with `tea issues list --limit 1000 --output json` when `--forge tea` is selected or a Gitea origin is detected
+- `--local` flag: write findings as local markdown files instead of creating remote issues — no forge CLI required
 - `--output <path>` flag: custom output directory for local markdown files (requires `--local`, defaults to `logs/<run-id>/issues/`)
 
 ### Documentation

@@ -21,11 +21,11 @@
 #     and prints the integer count on stdout.
 #   - gh/jq failures print nothing to stdout and return non-zero so callers do
 #     not collapse "unknown" into "0".
-#   - tea/fj are intentionally not implemented in this ticket and die with
-#     references to #61/#62.
+#   - tea is implemented by issue #61 with the same count/failure contract;
+#     fj remains intentionally not implemented and dies with a reference to #62.
 #   - No direct `gh issue list` command remains in lib/streak.sh.
 #
-# All forge calls are PATH-shadowed with a fake gh stub. No real GitHub call is
+# Forge calls are PATH-shadowed with fake gh/tea stubs. No real forge call is
 # made, and no agent command is invoked.
 
 set -uo pipefail
@@ -107,7 +107,11 @@ echo ""
 [[ -f "$SCRIPT_DIR/lib/streak.sh" ]] || { echo "FAIL: lib/streak.sh missing"; exit 1; }
 
 FAKE_BIN="$TMPDIR/bin"
+FORGE_TEST_PROJECT="$TMPDIR/audited-project"
 mkdir -p "$FAKE_BIN"
+mkdir -p "$FORGE_TEST_PROJECT"
+FORGE_PROJECT_PATH="$FORGE_TEST_PROJECT"
+FORGE_REMOTE_NAME="origin"
 cat > "$FAKE_BIN/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${REPOLENS_FAKE_GH_LOG:-/dev/null}"
@@ -121,16 +125,36 @@ exit "${REPOLENS_FAKE_GH_RC:-0}"
 SH
 chmod +x "$FAKE_BIN/gh"
 
+cat > "$FAKE_BIN/tea" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${REPOLENS_FAKE_TEA_LOG:-/dev/null}"
+if [[ -n "${REPOLENS_FAKE_TEA_STDERR+x}" ]]; then
+  printf '%s\n' "$REPOLENS_FAKE_TEA_STDERR" >&2
+fi
+if [[ -n "${REPOLENS_FAKE_TEA_STDOUT+x}" ]]; then
+  printf '%s\n' "$REPOLENS_FAKE_TEA_STDOUT"
+fi
+exit "${REPOLENS_FAKE_TEA_RC:-0}"
+SH
+chmod +x "$FAKE_BIN/tea"
+
 run_wrapper() {
   local provider="$1"; shift
   local fn="$1"; shift
   (
     export PATH="$FAKE_BIN:/usr/bin:/bin:$PATH"
     export FORGE_PROVIDER="$provider"
+    [[ -n "${FORGE_PROJECT_PATH+x}" ]] && export FORGE_PROJECT_PATH
+    [[ -n "${FORGE_REMOTE_NAME+x}" ]] && export FORGE_REMOTE_NAME
+    [[ -n "${FORGE_TEA_LOGIN+x}" ]] && export FORGE_TEA_LOGIN
     [[ -n "${REPOLENS_FAKE_GH_RC+x}" ]] && export REPOLENS_FAKE_GH_RC
     [[ -n "${REPOLENS_FAKE_GH_LOG+x}" ]] && export REPOLENS_FAKE_GH_LOG
     [[ -n "${REPOLENS_FAKE_GH_STDOUT+x}" ]] && export REPOLENS_FAKE_GH_STDOUT
     [[ -n "${REPOLENS_FAKE_GH_STDERR+x}" ]] && export REPOLENS_FAKE_GH_STDERR
+    [[ -n "${REPOLENS_FAKE_TEA_RC+x}" ]] && export REPOLENS_FAKE_TEA_RC
+    [[ -n "${REPOLENS_FAKE_TEA_LOG+x}" ]] && export REPOLENS_FAKE_TEA_LOG
+    [[ -n "${REPOLENS_FAKE_TEA_STDOUT+x}" ]] && export REPOLENS_FAKE_TEA_STDOUT
+    [[ -n "${REPOLENS_FAKE_TEA_STDERR+x}" ]] && export REPOLENS_FAKE_TEA_STDERR
     set -uo pipefail
     # shellcheck source=/dev/null
     source "$SCRIPT_DIR/lib/core.sh"
@@ -143,6 +167,11 @@ run_wrapper() {
 reset_fake_gh() {
   unset REPOLENS_FAKE_GH_RC REPOLENS_FAKE_GH_LOG
   unset REPOLENS_FAKE_GH_STDOUT REPOLENS_FAKE_GH_STDERR
+}
+
+reset_fake_tea() {
+  unset REPOLENS_FAKE_TEA_RC REPOLENS_FAKE_TEA_LOG
+  unset REPOLENS_FAKE_TEA_STDOUT REPOLENS_FAKE_TEA_STDERR
 }
 
 # ---------------------------------------------------------------------------
@@ -305,13 +334,21 @@ echo ""
 echo "--- Group 3: provider dispatch and argument guards ---"
 echo ""
 
-echo "Test 8: tea backend dies with not-yet-implemented message and #61"
+echo "Test 8: tea backend counts open issues with the expected issue-list argv"
 reset_fake_gh
-out="$(run_wrapper tea forge_issue_list_count owner/repo audit:demo 2>&1)"
+reset_fake_tea
+tea_log="$TMPDIR/t8-tea.log"
+: > "$tea_log"
+REPOLENS_FAKE_TEA_RC=0
+REPOLENS_FAKE_TEA_STDOUT='[{"number":1},{"number":2}]'
+REPOLENS_FAKE_TEA_LOG="$tea_log"
+out="$(run_wrapper tea forge_issue_list_count owner/repo audit:demo 2>/dev/null)"
 rc=$?
-assert_rc_nonzero "tea branch exits non-zero" "$rc"
-assert_contains "tea branch says not yet implemented" "not yet implemented" "$out"
-assert_contains "tea branch references issue #61" "#61" "$out"
+logged="$(cat "$tea_log")"
+assert_rc_zero "tea branch exits zero on successful JSON count" "$rc"
+assert_eq "tea branch prints jq length" "2" "$out"
+assert_eq "tea branch passes supported issue-list flags in order" \
+  "issues list --repo $FORGE_TEST_PROJECT --remote origin --labels audit:demo --state open --limit 1000 --output json" "$logged"
 
 echo ""
 echo "Test 9: fj backend dies with not-yet-implemented message and #62"
@@ -376,15 +413,17 @@ echo ""
 echo "Test 14: repolens.sh uses forge_issue_list_count at the issue-count call sites"
 legacy_refs="$(grep -nF 'count_repo_issues' "$SCRIPT_DIR/repolens.sh" 2>/dev/null || true)"
 forge_call_count="$(grep -cF 'forge_issue_list_count "$REPO_OWNER/$REPO_NAME" "$lens_label"' "$SCRIPT_DIR/repolens.sh" 2>/dev/null || true)"
+forge_context_count="$(grep -cF 'FORGE_PROJECT_PATH="$PROJECT_PATH"' "$SCRIPT_DIR/repolens.sh" 2>/dev/null || true)"
 TOTAL=$((TOTAL + 1))
-if [[ -z "$legacy_refs" && "$forge_call_count" -eq 2 ]]; then
+if [[ -z "$legacy_refs" && "$forge_call_count" -eq 2 && "$forge_context_count" -ge 1 ]]; then
   PASS=$((PASS + 1))
-  echo "  PASS: runtime issue-count call sites use forge_issue_list_count"
+  echo "  PASS: runtime issue-count call sites use forge_issue_list_count with project context available"
 else
   FAIL=$((FAIL + 1))
-  echo "  FAIL: expected two forge_issue_list_count call sites and no count_repo_issues references"
+  echo "  FAIL: expected two forge_issue_list_count call sites, project context, and no count_repo_issues references"
   [[ -n "$legacy_refs" ]] && printf '%s\n' "$legacy_refs" | sed 's/^/    legacy: /'
   echo "    forge_issue_list_count call count: $forge_call_count"
+  echo "    FORGE_PROJECT_PATH assignment count: $forge_context_count"
 fi
 
 echo ""

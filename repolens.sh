@@ -29,13 +29,21 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # --- Source libraries ---
+# shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/core.sh"
+# shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/logging.sh"
+# shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/streak.sh"
+# shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/template.sh"
+# shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/summary.sh"
+# shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/parallel.sh"
+# shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/hosted.sh"
+# shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/forge.sh"
 
 VERSION="0.1.0"
@@ -245,6 +253,8 @@ DRY_RUN=false
 LOCAL_MODE=false
 OUTPUT_DIR=""
 FORGE_PROVIDER=""
+FORGE_PROJECT_PATH=""
+FORGE_REMOTE_NAME="origin"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -421,6 +431,10 @@ PROJECT_PATH="$(cd "$PROJECT_PATH" 2>/dev/null && pwd)" || die "Cannot access pr
 if [[ "$MODE" != "deploy" ]]; then
   git -C "$PROJECT_PATH" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "Not a git repository: $PROJECT_PATH"
 fi
+# shellcheck disable=SC2034 # Read by forge_* wrappers in lib/forge.sh.
+FORGE_PROJECT_PATH="$PROJECT_PATH"
+# shellcheck disable=SC2034 # Read by forge_* wrappers in lib/forge.sh.
+FORGE_REMOTE_NAME="origin"
 
 # --- Validate spec file ---
 if [[ -n "$SPEC_FILE" ]]; then

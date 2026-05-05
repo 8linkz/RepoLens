@@ -118,7 +118,8 @@ require_forge_cli() {
 #
 #   gh  → `gh auth status` — exit 0 ok, non-zero triggers die with the
 #         exact README-troubleshooting message.
-#   tea → die "not yet implemented" (lands in #61).
+#   tea → `tea login list` — exit 0 ok, non-zero triggers die with a
+#         Gitea-specific setup hint.
 #   fj  → die "not yet implemented" (lands in #62).
 #
 #   Callers in repolens.sh keep their outer `if ! $LOCAL_MODE` gate —
@@ -132,7 +133,8 @@ forge_auth_status() {
         || die "gh is not authenticated. Run 'gh auth login'."
       ;;
     tea)
-      die "forge_auth_status: tea backend not yet implemented (see #61)"
+      tea login list >/dev/null 2>&1 \
+        || die "tea is not authenticated. Run 'tea login add'."
       ;;
     fj)
       die "forge_auth_status: fj backend not yet implemented (see #62)"
@@ -151,7 +153,8 @@ forge_auth_status() {
 #
 #   gh  → `gh label create <label> --color <color> --force -R <owner/repo>`
 #         with stderr suppressed and exit ignored.
-#   tea → die "not yet implemented" (lands in #61).
+#   tea → `tea labels create --name <label> --color <color> ...`
+#         bound to $FORGE_PROJECT_PATH/$FORGE_REMOTE_NAME or $FORGE_TEA_LOGIN.
 #   fj  → die "not yet implemented" (lands in #62).
 #
 #   All three args are required; any missing arg is a caller bug and
@@ -168,7 +171,15 @@ forge_label_create() {
       gh label create "$label" --color "$color" --force -R "$repo" 2>/dev/null || true
       ;;
     tea)
-      die "forge_label_create: tea backend not yet implemented (see #61)"
+      local -a tea_target_flags=()
+      if [[ -n "${FORGE_PROJECT_PATH:-}" ]]; then
+        tea_target_flags=(--repo "$FORGE_PROJECT_PATH" --remote "${FORGE_REMOTE_NAME:-origin}")
+      elif [[ -n "${FORGE_TEA_LOGIN:-}" ]]; then
+        tea_target_flags=(--repo "$repo" --login "$FORGE_TEA_LOGIN")
+      else
+        die "forge_label_create: tea backend requires FORGE_PROJECT_PATH or FORGE_TEA_LOGIN for target binding"
+      fi
+      tea labels create --name "$label" --color "$color" "${tea_target_flags[@]}" 2>/dev/null || true
       ;;
     fj)
       die "forge_label_create: fj backend not yet implemented (see #62)"
@@ -188,7 +199,9 @@ forge_label_create() {
 #
 #   gh  -> `gh issue list -R <owner/repo> --label <label> --state open
 #          --limit 1000 --json number`, counted via jq.
-#   tea -> die "not yet implemented" (lands in #61).
+#   tea -> `tea issues list ... --labels <label> --state open --limit 1000
+#          --output json`, bound to $FORGE_PROJECT_PATH/$FORGE_REMOTE_NAME or
+#          $FORGE_TEA_LOGIN, counted via jq.
 #   fj  -> die "not yet implemented" (lands in #62).
 #
 #   Both args are required; missing args are caller bugs and die loudly.
@@ -236,7 +249,48 @@ forge_issue_list_count() {
       return 0
       ;;
     tea)
-      die "forge_issue_list_count: tea backend not yet implemented (see #61)"
+      local -a tea_target_flags=()
+      if [[ -n "${FORGE_PROJECT_PATH:-}" ]]; then
+        tea_target_flags=(--repo "$FORGE_PROJECT_PATH" --remote "${FORGE_REMOTE_NAME:-origin}")
+      elif [[ -n "${FORGE_TEA_LOGIN:-}" ]]; then
+        tea_target_flags=(--repo "$repo" --login "$FORGE_TEA_LOGIN")
+      else
+        die "forge_issue_list_count: tea backend requires FORGE_PROJECT_PATH or FORGE_TEA_LOGIN for target binding"
+      fi
+
+      local tea_err tea_out tea_rc
+      tea_err="$(mktemp 2>/dev/null)" || tea_err=""
+      if [[ -n "$tea_err" ]]; then
+        tea_out="$(tea issues list "${tea_target_flags[@]}" --labels "$label" --state open \
+          --limit 1000 --output json 2>"$tea_err")"
+        tea_rc=$?
+      else
+        tea_out="$(tea issues list "${tea_target_flags[@]}" --labels "$label" --state open \
+          --limit 1000 --output json 2>/dev/null)"
+        tea_rc=$?
+      fi
+      if [[ "$tea_rc" -ne 0 ]]; then
+        local first_err=""
+        if [[ -n "$tea_err" && -s "$tea_err" ]]; then
+          first_err="$(head -n1 "$tea_err" 2>/dev/null || true)"
+        fi
+        [[ -n "$tea_err" ]] && rm -f "$tea_err"
+        _forge_warn "forge_issue_list_count: tea failed for repo=$repo label=$label rc=$tea_rc err=${first_err:-<empty>}"
+        return 1
+      fi
+      [[ -n "$tea_err" ]] && rm -f "$tea_err"
+
+      local n
+      if ! n="$(printf '%s' "$tea_out" | jq 'length' 2>/dev/null)"; then
+        _forge_warn "forge_issue_list_count: jq failed to parse tea output for repo=$repo label=$label"
+        return 1
+      fi
+      if ! [[ "$n" =~ ^[0-9]+$ ]]; then
+        _forge_warn "forge_issue_list_count: unexpected non-integer from jq for repo=$repo label=$label: '$n'"
+        return 1
+      fi
+      printf '%s\n' "$n"
+      return 0
       ;;
     fj)
       die "forge_issue_list_count: fj backend not yet implemented (see #62)"
