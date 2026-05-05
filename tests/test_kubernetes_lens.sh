@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Tests for issue #66/#67/#68/#69: kubernetes lens integration.
+# Tests for issue #66/#67/#68/#69/#70: kubernetes lens integration.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -21,6 +21,7 @@ SECURITY_CONTEXT_LENS_FILE="$SCRIPT_DIR/prompts/lenses/kubernetes/security-conte
 NETWORK_POLICIES_LENS_FILE="$SCRIPT_DIR/prompts/lenses/kubernetes/network-policies.md"
 RESOURCE_MANAGEMENT_LENS_FILE="$SCRIPT_DIR/prompts/lenses/kubernetes/resource-management.md"
 IMAGE_SECURITY_LENS_FILE="$SCRIPT_DIR/prompts/lenses/kubernetes/image-security.md"
+INGRESS_TLS_LENS_FILE="$SCRIPT_DIR/prompts/lenses/kubernetes/ingress-tls.md"
 DOMAINS_FILE="$SCRIPT_DIR/config/domains.json"
 COLORS_FILE="$SCRIPT_DIR/config/label-colors.json"
 
@@ -69,13 +70,14 @@ assert_file_exists() {
 }
 
 echo ""
-echo "=== Test Suite: kubernetes lenses (issues #66/#67/#68/#69) ==="
+echo "=== Test Suite: kubernetes lenses (issues #66/#67/#68/#69/#70) ==="
 echo ""
 
 assert_file_exists "security-context lens prompt exists" "$SECURITY_CONTEXT_LENS_FILE"
 assert_file_exists "network-policies lens prompt exists" "$NETWORK_POLICIES_LENS_FILE"
 assert_file_exists "resource-management lens prompt exists" "$RESOURCE_MANAGEMENT_LENS_FILE"
 assert_file_exists "image-security lens prompt exists" "$IMAGE_SECURITY_LENS_FILE"
+assert_file_exists "ingress-tls lens prompt exists" "$INGRESS_TLS_LENS_FILE"
 
 security_context_content=""
 if [[ -f "$SECURITY_CONTEXT_LENS_FILE" ]]; then
@@ -95,6 +97,11 @@ fi
 image_security_content=""
 if [[ -f "$IMAGE_SECURITY_LENS_FILE" ]]; then
   image_security_content="$(cat "$IMAGE_SECURITY_LENS_FILE")"
+fi
+
+ingress_tls_content=""
+if [[ -f "$INGRESS_TLS_LENS_FILE" ]]; then
+  ingress_tls_content="$(cat "$INGRESS_TLS_LENS_FILE")"
 fi
 
 echo ""
@@ -166,7 +173,7 @@ assert_eq "no mode field" "null" "$kubernetes_mode"
 echo ""
 echo "Test 9: Kubernetes domain contains all lenses in stable order"
 kubernetes_lenses="$(jq -r '.domains[] | select(.id == "kubernetes") | .lenses | join(",")' "$DOMAINS_FILE")"
-assert_eq "registered lens list" "security-context,network-policies,resource-management,image-security" "$kubernetes_lenses"
+assert_eq "registered lens list" "security-context,network-policies,resource-management,image-security,ingress-tls" "$kubernetes_lenses"
 
 echo ""
 echo "Test 10: Kubernetes label color is configured"
@@ -177,7 +184,7 @@ echo ""
 echo "Test 11: Audit-like mode resolution includes all Kubernetes lenses"
 audit_lenses="$(jq -r --arg mode "audit" \
   '.domains | sort_by(.order)[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy") elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content") end) | .id as $d | .lenses[] | $d + "/" + .' "$DOMAINS_FILE")"
-for lens in kubernetes/security-context kubernetes/network-policies kubernetes/resource-management kubernetes/image-security; do
+for lens in kubernetes/security-context kubernetes/network-policies kubernetes/resource-management kubernetes/image-security kubernetes/ingress-tls; do
   if grep -qxF "$lens" <<< "$audit_lenses"; then
     PASS=$((PASS + 1))
     TOTAL=$((TOTAL + 1))
@@ -194,7 +201,7 @@ echo "Test 12: Exclusive modes do not include Kubernetes lenses"
 for mode in discover deploy opensource content; do
   mode_lenses="$(jq -r --arg mode "$mode" \
     '.domains | sort_by(.order)[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy") elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content") end) | .id as $d | .lenses[] | $d + "/" + .' "$DOMAINS_FILE")"
-  for lens in kubernetes/security-context kubernetes/network-policies kubernetes/resource-management kubernetes/image-security; do
+  for lens in kubernetes/security-context kubernetes/network-policies kubernetes/resource-management kubernetes/image-security kubernetes/ingress-tls; do
     if grep -qxF "$lens" <<< "$mode_lenses"; then
       FAIL=$((FAIL + 1))
       TOTAL=$((TOTAL + 1))
@@ -264,6 +271,39 @@ for term in \
   "Kyverno" \
   "cosign"; do
   assert_contains "image-security mentions $term" "$term" "$image_security_content"
+done
+
+echo ""
+echo "Test 19: ingress-tls frontmatter is complete"
+assert_contains "ingress-tls id frontmatter" "id: ingress-tls" "$ingress_tls_content"
+assert_contains "ingress-tls domain frontmatter" "domain: kubernetes" "$ingress_tls_content"
+assert_contains "ingress-tls name frontmatter" "name: Ingress TLS & Transport Security" "$ingress_tls_content"
+assert_contains "ingress-tls role frontmatter" "role: Kubernetes Ingress Security Specialist" "$ingress_tls_content"
+
+echo ""
+echo "Test 20: ingress-tls body has required sections"
+assert_contains "ingress-tls expert focus section" "## Your Expert Focus" "$ingress_tls_content"
+assert_contains "ingress-tls hunt section" "### What You Hunt For" "$ingress_tls_content"
+assert_contains "ingress-tls investigate section" "### How You Investigate" "$ingress_tls_content"
+
+echo ""
+echo "Test 21: ingress-tls lens covers Kubernetes Ingress transport security risks"
+for term in \
+  "Ingress" \
+  "tls" \
+  "cert-manager.io/cluster-issuer" \
+  "cert-manager.io/issuer" \
+  "ssl-redirect" \
+  "hsts" \
+  "max-age" \
+  "includeSubDomains" \
+  "preload" \
+  "proxy-body-size" \
+  "limit-rps" \
+  "proxy-read-timeout" \
+  "backend-protocol" \
+  "kubernetes_ingress_v1"; do
+  assert_contains "ingress-tls mentions $term" "$term" "$ingress_tls_content"
 done
 
 echo ""
