@@ -171,6 +171,12 @@
       "name": "Kubernetes",
       "order": 28,
       "lenses": ["security-context", "network-policies", "resource-management", "image-security", "ingress-tls", "rbac", "secrets-management"]
+    },
+    {
+      "id": "llm-security",
+      "name": "LLM Security",
+      "order": 29,
+      "lenses": ["output-sanitization"]
     }
   ]
 }
