@@ -19,11 +19,30 @@
 HOSTED_NETWORK=""
 HOSTED_SERVICES=""
 HOSTED_SERVICES_DETAIL=""
+HOSTED_API_SPECS_DETAIL=""
 HOSTED_HTTP_SERVICE_COUNT=0
 HOSTED_HTTP_RESPONDING_COUNT=0
 HOSTED_HTTP_UNHEALTHY_COUNT=0
 HOSTED_HTTP_UNKNOWN_COUNT=0
 HOSTED_OWNER="false"  # true if we started the compose project (vs reusing existing)
+HOSTED_API_SPEC_MAX_BODY_BYTES="${HOSTED_API_SPEC_MAX_BODY_BYTES:-262144}"
+
+HOSTED_API_SPEC_PATHS=(
+  /openapi.json
+  /openapi.yaml
+  /openapi.yml
+  /swagger.json
+  /swagger.yaml
+  /swagger.yml
+  /docs/openapi.json
+  /api/v1/openapi.json
+  /api/v1/openapi.yaml
+  /api-docs
+  /v3/api-docs
+  /v2/api-docs
+  /api/docs
+  /docs
+)
 
 # detect_compose_file <project_path>
 #   Prints the path to the first compose file found. Returns 1 if none.
@@ -114,6 +133,7 @@ setup_hosted_env() {
   log_info "Using Docker network: ${HOSTED_NETWORK}"
 
   discover_services "$compose_file" "$project_name"
+  probe_api_specs
   if [[ -n "$HOSTED_SERVICES" ]]; then
     log_info "Discovered services: ${HOSTED_SERVICES}"
   else
@@ -243,6 +263,119 @@ _probe_http_service() {
   fi
 }
 
+# _classify_api_spec_body <path> <body>
+#   Prints a label for a raw schema or docs UI candidate. Empty means invalid.
+_classify_api_spec_body() {
+  local path="$1" body="$2"
+
+  if printf '%s' "$body" | jq -e 'type == "object" and has("openapi")' >/dev/null 2>&1; then
+    printf 'OpenAPI JSON'
+    return 0
+  fi
+  if printf '%s' "$body" | jq -e 'type == "object" and has("swagger")' >/dev/null 2>&1; then
+    printf 'Swagger JSON'
+    return 0
+  fi
+  if printf '%s' "$body" | grep -Eiq '^[[:space:]]*openapi:[[:space:]]*'; then
+    printf 'OpenAPI YAML'
+    return 0
+  fi
+  if printf '%s' "$body" | grep -Eiq '^[[:space:]]*swagger:[[:space:]]*'; then
+    printf 'Swagger YAML'
+    return 0
+  fi
+
+  case "$path" in
+    /docs|/api/docs|/api-docs)
+      printf 'Swagger UI/docs, schema URL not confirmed'
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+# _probe_api_spec_url <service_name> <port> <path>
+#   Probes a candidate schema URL from inside the Compose network.
+#   Prints "raw|url|label" or "docs|url|label" when the HTTP 200 response is useful.
+_probe_api_spec_url() {
+  local service_name="$1" port="$2" path="$3"
+  local url output rc http_code body label kind max_body_bytes read_limit output_bytes
+
+  [[ -z "${HOSTED_NETWORK:-}" || -z "$service_name" || -z "$port" || -z "$path" ]] && return 0
+
+  url="http://${service_name}:${port}${path}"
+  max_body_bytes="${HOSTED_API_SPEC_MAX_BODY_BYTES:-262144}"
+  if [[ ! "$max_body_bytes" =~ ^[1-9][0-9]*$ ]]; then
+    max_body_bytes=262144
+  fi
+  read_limit=$((max_body_bytes + 5))
+  output="$(docker run --rm --network "$HOSTED_NETWORK" curlimages/curl \
+    -sS -w '\n%{http_code}' \
+    --connect-timeout 1 --max-time 2 \
+    "$url" 2>/dev/null | head -c "$read_limit")"
+  rc=$?
+  [[ "$rc" -ne 0 ]] && return 0
+
+  output_bytes="$(LC_ALL=C printf '%s' "$output" | wc -c)"
+  output_bytes="${output_bytes//[[:space:]]/}"
+  [[ "$output_bytes" -ge "$read_limit" ]] && return 0
+
+  http_code="$(printf '%s' "$output" | tail -n 1 | tr -d '\r')"
+  [[ "$http_code" =~ ^[0-9][0-9][0-9]$ ]] || return 0
+  [[ "$http_code" == "200" ]] || return 0
+
+  body="$(printf '%s' "$output" | sed '$d')"
+  label="$(_classify_api_spec_body "$path" "$body")" || return 0
+
+  kind="raw"
+  if [[ "$label" == *"schema URL not confirmed"* ]]; then
+    kind="docs"
+  fi
+  printf '%s|%s|%s\n' "$kind" "$url" "$label"
+}
+
+# probe_api_specs
+#   Populates HOSTED_API_SPECS_DETAIL with one detected schema/docs URL per service.
+probe_api_specs() {
+  local service_entries service_entry service_name port path result kind url label docs_candidate
+
+  HOSTED_API_SPECS_DETAIL=""
+  [[ -z "${HOSTED_NETWORK:-}" || -z "$HOSTED_SERVICES" ]] && return 0
+
+  IFS=',' read -r -a service_entries <<< "$HOSTED_SERVICES"
+  for service_entry in "${service_entries[@]}"; do
+    [[ -z "$service_entry" ]] && continue
+    service_name="${service_entry%%:*}"
+    port="${service_entry#*:}"
+    [[ -z "$service_name" || -z "$port" || "$port" == "none" || "$port" == "$service_entry" ]] && continue
+
+    docs_candidate=""
+    for path in "${HOSTED_API_SPEC_PATHS[@]}"; do
+      result="$(_probe_api_spec_url "$service_name" "$port" "$path")"
+      [[ -z "$result" ]] && continue
+
+      IFS='|' read -r kind url label <<< "$result"
+      if [[ "$kind" == "raw" ]]; then
+        HOSTED_API_SPECS_DETAIL="${HOSTED_API_SPECS_DETAIL}
+    - ${service_name}: ${url} (${label})"
+        docs_candidate=""
+        break
+      elif [[ -z "$docs_candidate" ]]; then
+        docs_candidate="    - ${service_name}: ${url} (${label})"
+      fi
+    done
+
+    if [[ -n "$docs_candidate" ]]; then
+      HOSTED_API_SPECS_DETAIL="${HOSTED_API_SPECS_DETAIL}
+${docs_candidate}"
+    fi
+  done
+
+  HOSTED_API_SPECS_DETAIL="${HOSTED_API_SPECS_DETAIL#$'\n'}"
+  return 0
+}
+
 # _record_hosted_http_health <health_label>
 #   Tracks aggregate HTTP health so hosted mode can warn before scans start.
 _record_hosted_http_health() {
@@ -281,6 +414,7 @@ discover_services() {
 
   HOSTED_SERVICES=""
   HOSTED_SERVICES_DETAIL=""
+  HOSTED_API_SPECS_DETAIL=""
   HOSTED_HTTP_SERVICE_COUNT=0
   HOSTED_HTTP_RESPONDING_COUNT=0
   HOSTED_HTTP_UNHEALTHY_COUNT=0
@@ -357,6 +491,14 @@ discover_services() {
 #   Prints the prompt section for agent prompt injection. Empty if no services.
 build_hosted_section() {
   [[ -z "$HOSTED_SERVICES_DETAIL" ]] && return 0
+  local api_specs_section=""
+
+  if [[ -n "$HOSTED_API_SPECS_DETAIL" ]]; then
+    api_specs_section="
+**Detected API specs:**
+${HOSTED_API_SPECS_DETAIL}
+"
+  fi
 
   cat <<EOF
 ## Hosted Environment
@@ -370,6 +512,7 @@ You may run DAST tools against these endpoints. Scanning is authorized and safe.
 **Available services:**
 ${HOSTED_SERVICES_DETAIL}
 
+${api_specs_section}\
 **Running DAST tools via Docker:**
 To run a tool against these services, connect it to the same network:
 \`docker run --rm --network ${HOSTED_NETWORK} <image> <command>\`
@@ -394,6 +537,7 @@ cleanup_hosted() {
   HOSTED_NETWORK=""
   HOSTED_SERVICES=""
   HOSTED_SERVICES_DETAIL=""
+  HOSTED_API_SPECS_DETAIL=""
   HOSTED_HTTP_SERVICE_COUNT=0
   HOSTED_HTTP_RESPONDING_COUNT=0
   HOSTED_HTTP_UNHEALTHY_COUNT=0

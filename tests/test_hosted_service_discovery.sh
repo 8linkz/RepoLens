@@ -13,8 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Regression tests for issue #83: hosted discovery must report the container
-# ports reachable from the Compose network, not only host-published ports.
+# Regression tests for hosted discovery. Issue #83 covers scanner-reachable
+# container ports; issue #85 covers hosted OpenAPI/Swagger spec detection.
 
 set -uo pipefail
 
@@ -41,6 +41,7 @@ DOCKER_INSPECT_FORMAT_OUTPUT=""
 DOCKER_INSPECT_JSON_OUTPUT=""
 DOCKER_RUN_RESPONSES=""
 LOG_WARN_MESSAGES=""
+LOG_INFO_MESSAGES=""
 
 record_pass() {
   TOTAL=$((TOTAL + 1))
@@ -92,7 +93,14 @@ assert_zero_rc() {
 
 set_docker_run_response() {
   local service="$1" port="$2" output="$3" rc="$4"
-  DOCKER_RUN_RESPONSES="${DOCKER_RUN_RESPONSES}${service}|${port}|${output}|${rc}"$'\n'
+  local encoded_output="${output//$'\n'/__REPOLENS_TEST_NEWLINE__}"
+  DOCKER_RUN_RESPONSES="${DOCKER_RUN_RESPONSES}${service}|${port}|/|${encoded_output}|${rc}"$'\n'
+}
+
+set_docker_run_response_for_path() {
+  local service="$1" port="$2" path="$3" output="$4" rc="$5"
+  local encoded_output="${output//$'\n'/__REPOLENS_TEST_NEWLINE__}"
+  DOCKER_RUN_RESPONSES="${DOCKER_RUN_RESPONSES}${service}|${port}|${path}|${encoded_output}|${rc}"$'\n'
 }
 
 reset_docker_stub() {
@@ -105,10 +113,13 @@ reset_docker_stub() {
   DOCKER_INSPECT_JSON_OUTPUT=""
   DOCKER_RUN_RESPONSES=""
   LOG_WARN_MESSAGES=""
+  LOG_INFO_MESSAGES=""
   : > "$DOCKER_CALL_LOG"
   HOSTED_NETWORK="issue83_default"
   HOSTED_SERVICES=""
   HOSTED_SERVICES_DETAIL=""
+  HOSTED_API_SPECS_DETAIL=""
+  HOSTED_API_SPEC_MAX_BODY_BYTES=262144
 }
 
 # shellcheck disable=SC2329  # Indirectly invoked by sourced hosted helpers.
@@ -117,11 +128,19 @@ log_warn() {
 }
 
 # shellcheck disable=SC2329  # Indirectly invoked by sourced hosted helpers.
+log_info() {
+  LOG_INFO_MESSAGES="${LOG_INFO_MESSAGES}${1}"$'\n'
+}
+
+# shellcheck disable=SC2329  # Indirectly invoked by sourced hosted helpers.
 docker() {
   printf '%s\n' "$*" >> "$DOCKER_CALL_LOG"
 
   if [[ "${1:-}" == "compose" ]]; then
-    if [[ "$*" == *" ps --format json"* ]]; then
+    if [[ "${2:-}" == "version" ]]; then
+      return 0
+    fi
+    if [[ "$*" == *" ps "* && "$*" == *"--format json"* ]]; then
       printf '%s\n' "$DOCKER_PS_JSON"
       return "$DOCKER_PS_RC"
     fi
@@ -144,13 +163,15 @@ docker() {
   fi
 
   if [[ "${1:-}" == "run" ]]; then
-    local url="${!#}" service port rule_service rule_port rule_output rule_rc
-    if [[ "$url" =~ ^http://([^:/]+):([0-9]+)/ ]]; then
+    local url="${!#}" service port path rule_service rule_port rule_path rule_output rule_rc
+    if [[ "$url" =~ ^http://([^:/]+):([0-9]+)(/[^[:space:]]*)?$ ]]; then
       service="${BASH_REMATCH[1]}"
       port="${BASH_REMATCH[2]}"
-      while IFS='|' read -r rule_service rule_port rule_output rule_rc; do
+      path="${BASH_REMATCH[3]:-/}"
+      while IFS='|' read -r rule_service rule_port rule_path rule_output rule_rc; do
         [[ -z "$rule_service" ]] && continue
-        if [[ "$rule_service" == "$service" && "$rule_port" == "$port" ]]; then
+        if [[ "$rule_service" == "$service" && "$rule_port" == "$port" && "$rule_path" == "$path" ]]; then
+          rule_output="${rule_output//__REPOLENS_TEST_NEWLINE__/$'\n'}"
           printf '%s' "$rule_output"
           return "${rule_rc:-0}"
         fi
@@ -405,6 +426,178 @@ set_docker_run_response "api" "8080" "curl output without status" "0"
 run_discovery
 assert_contains "malformed probe output appears unknown" "api: http://api:8080 (internal, example/api) [unknown]" "$HOSTED_SERVICES_DETAIL"
 assert_eq "unknown successful probe does not warn" "" "$LOG_WARN_MESSAGES"
+
+echo ""
+echo "Test 20: hosted API spec detection renders scanner-reachable OpenAPI URLs"
+reset_docker_stub
+HOSTED_NETWORK="issue85_default"
+HOSTED_SERVICES="api:8080"
+HOSTED_SERVICES_DETAIL="    - api: http://api:8080 (internal, example/api) [responding HTTP 404]"
+set_docker_run_response_for_path "api" "8080" "/openapi.json" $'{"openapi":"3.0.3","info":{"title":"API","version":"1.0.0"},"paths":{}}\n200' "0"
+probe_api_specs 2>/dev/null
+rc=$?
+hosted_section="$(build_hosted_section)"
+assert_zero_rc "probe_api_specs succeeds when OpenAPI JSON is found" "$rc"
+assert_contains "hosted section includes detected API specs block" "**Detected API specs:**" "$hosted_section"
+assert_contains "detected spec uses service DNS name and selected port" "api: http://api:8080/openapi.json" "$hosted_section"
+assert_contains "detected spec is labelled OpenAPI" "OpenAPI" "$hosted_section"
+
+echo ""
+echo "Test 21: raw Swagger/OpenAPI specs are preferred over 200 HTML pages"
+reset_docker_stub
+HOSTED_NETWORK="issue85_default"
+HOSTED_SERVICES="api:8080"
+HOSTED_SERVICES_DETAIL="    - api: http://api:8080 (internal, example/api) [healthy]"
+set_docker_run_response_for_path "api" "8080" "/openapi.json" $'<html>not a machine-readable schema</html>\n200' "0"
+set_docker_run_response_for_path "api" "8080" "/swagger.json" $'{"swagger":"2.0","info":{"title":"API","version":"1.0.0"},"paths":{}}\n200' "0"
+set_docker_run_response_for_path "api" "8080" "/docs" $'<html><title>Swagger UI</title></html>\n200' "0"
+probe_api_specs 2>/dev/null
+rc=$?
+hosted_section="$(build_hosted_section)"
+assert_zero_rc "probe_api_specs succeeds after ignoring non-schema 200 content" "$rc"
+assert_contains "first valid raw Swagger schema is surfaced" "api: http://api:8080/swagger.json" "$hosted_section"
+assert_not_contains "200 HTML at schema path is not treated as the detected raw spec" "api: http://api:8080/openapi.json" "$hosted_section"
+assert_not_contains "later docs UI does not replace an earlier raw spec" "api: http://api:8080/docs" "$hosted_section"
+
+echo ""
+echo "Test 22: api/v1 OpenAPI JSON is detected after earlier candidates miss"
+reset_docker_stub
+HOSTED_NETWORK="issue85_default"
+HOSTED_SERVICES="api:8080"
+HOSTED_SERVICES_DETAIL="    - api: http://api:8080 (internal, example/api) [healthy]"
+set_docker_run_response_for_path "api" "8080" "/openapi.json" $'<html>not a machine-readable schema</html>\n200' "0"
+set_docker_run_response_for_path "api" "8080" "/swagger.json" "500" "0"
+set_docker_run_response_for_path "api" "8080" "/docs/openapi.json" $'{"message":"not a schema"}\n200' "0"
+set_docker_run_response_for_path "api" "8080" "/api/v1/openapi.json" $'{"openapi":"3.0.3","info":{"title":"API","version":"1.0.0"},"paths":{}}\n200' "0"
+probe_api_specs 2>/dev/null
+rc=$?
+hosted_section="$(build_hosted_section)"
+assert_zero_rc "probe_api_specs succeeds when api/v1 schema is found" "$rc"
+assert_contains "api/v1 OpenAPI schema is surfaced" "api: http://api:8080/api/v1/openapi.json (OpenAPI JSON)" "$hosted_section"
+
+echo ""
+echo "Test 23: docs endpoints are surfaced only as unconfirmed docs UI"
+reset_docker_stub
+HOSTED_NETWORK="issue85_default"
+HOSTED_SERVICES="gateway:8000"
+HOSTED_SERVICES_DETAIL="    - gateway: http://gateway:8000 (internal, example/gateway) [healthy]"
+set_docker_run_response_for_path "gateway" "8000" "/api/docs" $'<html><title>Swagger UI</title></html>\n200' "0"
+probe_api_specs 2>/dev/null
+rc=$?
+hosted_section="$(build_hosted_section)"
+assert_zero_rc "probe_api_specs succeeds when only docs UI is found" "$rc"
+assert_contains "docs UI endpoint is still made visible" "gateway: http://gateway:8000/api/docs" "$hosted_section"
+assert_contains "docs UI label warns that raw schema is not confirmed" "schema URL not confirmed" "$hosted_section"
+
+echo ""
+echo "Test 24: non-200 responses, curl failures, and none ports do not produce spec entries"
+reset_docker_stub
+HOSTED_NETWORK="issue85_default"
+HOSTED_SERVICES="api:8080,job:none"
+HOSTED_SERVICES_DETAIL=$'    - api: http://api:8080 (internal, example/api) [healthy]\n    - job: no discovered port (example/job) [not probed]'
+set_docker_run_response_for_path "api" "8080" "/openapi.json" "404" "0"
+probe_api_specs 2>/dev/null
+rc=$?
+hosted_section="$(build_hosted_section)"
+calls="$(docker_calls)"
+assert_zero_rc "probe_api_specs succeeds when candidates fail" "$rc"
+assert_not_contains "no detected block appears when all candidate probes fail" "**Detected API specs:**" "$hosted_section"
+assert_not_contains "service:none entries are not probed" "http://job:none" "$calls"
+
+echo ""
+echo "Test 25: oversized API spec candidates are rejected"
+reset_docker_stub
+HOSTED_NETWORK="issue85_default"
+HOSTED_SERVICES="api:8080"
+HOSTED_SERVICES_DETAIL="    - api: http://api:8080 (internal, example/api) [healthy]"
+# shellcheck disable=SC2034  # Read by sourced hosted helpers when probing response size.
+HOSTED_API_SPEC_MAX_BODY_BYTES=32
+set_docker_run_response_for_path "api" "8080" "/openapi.json" $'{"openapi":"3.0.3","padding":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}\n200' "0"
+probe_api_specs 2>/dev/null
+rc=$?
+hosted_section="$(build_hosted_section)"
+assert_zero_rc "probe_api_specs succeeds when oversized candidates are ignored" "$rc"
+assert_not_contains "oversized 200 response does not produce detected specs block" "**Detected API specs:**" "$hosted_section"
+assert_not_contains "oversized 200 response is not classified as OpenAPI" "api: http://api:8080/openapi.json" "$hosted_section"
+
+echo ""
+echo "Test 26: missing hosted network skips API spec probing"
+reset_docker_stub
+HOSTED_NETWORK=""
+HOSTED_SERVICES="api:8080"
+HOSTED_SERVICES_DETAIL="    - api: http://api:8080 (internal, example/api) [unknown]"
+HOSTED_API_SPECS_DETAIL="    - stale: http://stale:8080/openapi.json (OpenAPI JSON)"
+set_docker_run_response_for_path "api" "8080" "/openapi.json" $'{"openapi":"3.0.3","info":{"title":"API","version":"1.0.0"},"paths":{}}\n200' "0"
+probe_api_specs 2>/dev/null
+rc=$?
+hosted_section="$(build_hosted_section)"
+calls="$(docker_calls)"
+assert_zero_rc "probe_api_specs succeeds as a no-op without a network" "$rc"
+assert_eq "missing network clears stale detected API specs" "" "$HOSTED_API_SPECS_DETAIL"
+assert_not_contains "missing network does not launch curl containers" "run --rm --network" "$calls"
+assert_not_contains "missing network leaves detected specs block empty" "**Detected API specs:**" "$hosted_section"
+
+echo ""
+echo "Test 27: hosted API spec state is cleared between discovery and cleanup runs"
+reset_docker_stub
+HOSTED_API_SPECS_DETAIL="    - stale: http://stale:8080/openapi.json (OpenAPI)"
+DOCKER_PS_JSON=""
+run_discovery
+assert_eq "discover_services clears stale detected API specs" "" "$HOSTED_API_SPECS_DETAIL"
+HOSTED_API_SPECS_DETAIL="    - stale: http://stale:8080/openapi.json (OpenAPI)"
+# shellcheck disable=SC2034  # Read by cleanup_hosted from sourced hosted helpers.
+HOSTED_OWNER="false"
+cleanup_hosted "issue85"
+assert_eq "cleanup_hosted clears detected API specs" "" "$HOSTED_API_SPECS_DETAIL"
+
+echo ""
+echo "Test 28: YAML API specs are detected for multiple services"
+reset_docker_stub
+HOSTED_NETWORK="issue85_default"
+HOSTED_SERVICES="api:8080,gateway:9090"
+HOSTED_SERVICES_DETAIL=$'    - api: http://api:8080 (internal, example/api) [healthy]\n    - gateway: http://gateway:9090 (internal, example/gateway) [healthy]'
+set_docker_run_response_for_path "api" "8080" "/openapi.yaml" $'openapi: 3.0.3\ninfo:\n  title: API\n  version: 1.0.0\npaths: {}\n200' "0"
+set_docker_run_response_for_path "gateway" "9090" "/swagger.yml" $'swagger: "2.0"\ninfo:\n  title: Gateway\n  version: 1.0.0\npaths: {}\n200' "0"
+probe_api_specs 2>/dev/null
+rc=$?
+hosted_section="$(build_hosted_section)"
+assert_zero_rc "probe_api_specs succeeds when YAML schemas are found" "$rc"
+assert_contains "OpenAPI YAML schema is surfaced" "api: http://api:8080/openapi.yaml (OpenAPI YAML)" "$hosted_section"
+assert_contains "Swagger YAML schema is surfaced" "gateway: http://gateway:9090/swagger.yml (Swagger YAML)" "$hosted_section"
+
+echo ""
+echo "Test 29: setup_hosted_env probes API specs after service discovery"
+reset_docker_stub
+printf 'services: {}\n' > "$TMPDIR/docker-compose.yml"
+# shellcheck disable=SC2034  # Read by setup_hosted_env before it discovers the network.
+HOSTED_NETWORK=""
+DOCKER_PS_JSON='{"Service":"api","Image":"example/api","ID":"api-id","Project":"issue85","State":"running","Publishers":[{"TargetPort":8080,"PublishedPort":0,"Protocol":"tcp"}]}'
+DOCKER_PS_Q_OUTPUT="api-id"
+DOCKER_INSPECT_FORMAT_OUTPUT="issue85_default"
+set_docker_run_response "api" "8080" "404" "0"
+set_docker_run_response_for_path "api" "8080" "/openapi.json" $'{"openapi":"3.1.0","info":{"title":"API","version":"1.0.0"},"paths":{}}\n200' "0"
+setup_hosted_env "$TMPDIR" "issue85" 2>/dev/null
+rc=$?
+hosted_section="$(build_hosted_section)"
+assert_zero_rc "setup_hosted_env succeeds with stubbed running compose service" "$rc"
+assert_contains "setup_hosted_env discovered the scanner-reachable service" "api:8080" "$HOSTED_SERVICES"
+assert_contains "setup_hosted_env renders detected specs from probe_api_specs" "api: http://api:8080/openapi.json (OpenAPI JSON)" "$hosted_section"
+
+echo ""
+echo "Test 30: later raw API schemas replace earlier docs UI candidates"
+reset_docker_stub
+# shellcheck disable=SC2034  # Read by sourced hosted helpers during API spec probing.
+HOSTED_NETWORK="issue85_default"
+HOSTED_SERVICES="gateway:9090"
+HOSTED_SERVICES_DETAIL="    - gateway: http://gateway:9090 (internal, example/gateway) [healthy]"
+set_docker_run_response_for_path "gateway" "9090" "/api-docs" $'<html><title>Swagger UI</title></html>\n200' "0"
+set_docker_run_response_for_path "gateway" "9090" "/v3/api-docs" $'{"openapi":"3.0.3","info":{"title":"Gateway","version":"1.0.0"},"paths":{}}\n200' "0"
+probe_api_specs 2>/dev/null
+rc=$?
+hosted_section="$(build_hosted_section)"
+assert_zero_rc "probe_api_specs succeeds when raw schema follows docs UI" "$rc"
+assert_contains "later raw schema is surfaced instead of the docs candidate" "gateway: http://gateway:9090/v3/api-docs (OpenAPI JSON)" "$hosted_section"
+assert_not_contains "earlier docs UI candidate is not emitted when raw schema is found" "gateway: http://gateway:9090/api-docs" "$hosted_section"
 
 echo ""
 echo "=========================================="
