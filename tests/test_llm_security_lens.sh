@@ -13,13 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Tests for issues #73 and #74: llm-security lens integration.
+# Tests for issues #73, #74, and #75: llm-security lens integration.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LENS_DIR="$SCRIPT_DIR/prompts/lenses/llm-security"
 OUTPUT_LENS_FILE="$LENS_DIR/output-sanitization.md"
 PROMPT_INJECTION_LENS_FILE="$LENS_DIR/prompt-injection.md"
+AGENT_ISOLATION_LENS_FILE="$LENS_DIR/agent-isolation.md"
 DOMAINS_FILE="$SCRIPT_DIR/config/domains.json"
 COLORS_FILE="$SCRIPT_DIR/config/label-colors.json"
 
@@ -68,11 +69,12 @@ assert_file_exists() {
 }
 
 echo ""
-echo "=== Test Suite: llm-security lenses (issues #73 and #74) ==="
+echo "=== Test Suite: llm-security lenses (issues #73, #74, and #75) ==="
 echo ""
 
 assert_file_exists "output-sanitization lens prompt exists" "$OUTPUT_LENS_FILE"
 assert_file_exists "prompt-injection lens prompt exists" "$PROMPT_INJECTION_LENS_FILE"
+assert_file_exists "agent-isolation lens prompt exists" "$AGENT_ISOLATION_LENS_FILE"
 
 lens_content=""
 if [[ -f "$OUTPUT_LENS_FILE" ]]; then
@@ -82,6 +84,11 @@ fi
 prompt_injection_content=""
 if [[ -f "$PROMPT_INJECTION_LENS_FILE" ]]; then
   prompt_injection_content="$(cat "$PROMPT_INJECTION_LENS_FILE")"
+fi
+
+agent_isolation_content=""
+if [[ -f "$AGENT_ISOLATION_LENS_FILE" ]]; then
+  agent_isolation_content="$(cat "$AGENT_ISOLATION_LENS_FILE")"
 fi
 
 echo ""
@@ -149,32 +156,66 @@ for term in \
 done
 
 echo ""
-echo "Test 7: llm-security domain is registered once"
+echo "Test 7: agent-isolation frontmatter is complete"
+assert_contains "id frontmatter" "id: agent-isolation" "$agent_isolation_content"
+assert_contains "domain frontmatter" "domain: llm-security" "$agent_isolation_content"
+assert_contains "name frontmatter" "name: Agent Isolation & Sandbox Escape" "$agent_isolation_content"
+assert_contains "role frontmatter" "role: Agent Sandbox Security Specialist" "$agent_isolation_content"
+
+echo ""
+echo "Test 8: agent-isolation body has required sections"
+assert_contains "expert focus section" "## Your Expert Focus" "$agent_isolation_content"
+assert_contains "hunt section" "### What You Hunt For" "$agent_isolation_content"
+assert_contains "investigate section" "### How You Investigate" "$agent_isolation_content"
+
+echo ""
+echo "Test 9: agent-isolation covers agent sandbox escape risks"
+for term in \
+  "LLM agent isolation" \
+  "Docker socket" \
+  "privileged" \
+  "--pid=host" \
+  "--network=host" \
+  "cap_drop" \
+  "Filesystem Escape" \
+  ".git/hooks/" \
+  "--pids-limit" \
+  "169.254.169.254" \
+  "Subprocess Fallback Without Sandboxing" \
+  "seccomp" \
+  "AppArmor" \
+  "SIGKILL"; do
+  assert_contains "prompt mentions $term" "$term" "$agent_isolation_content"
+done
+
+echo ""
+echo "Test 10: llm-security domain is registered once"
 domain_count="$(jq '[.domains[] | select(.id == "llm-security")] | length' "$DOMAINS_FILE")"
 assert_eq "one llm-security domain" "1" "$domain_count"
 
 echo ""
-echo "Test 8: llm-security domain is mode-less default audit coverage"
+echo "Test 11: llm-security domain is mode-less default audit coverage"
 domain_mode="$(jq -r '.domains[] | select(.id == "llm-security") | .mode // "null"' "$DOMAINS_FILE")"
 assert_eq "no mode field" "null" "$domain_mode"
 
 echo ""
-echo "Test 9: llm-security domain contains both lenses"
+echo "Test 12: llm-security domain contains all lenses"
 domain_lenses="$(jq -r '.domains[] | select(.id == "llm-security") | .lenses | join(",")' "$DOMAINS_FILE")"
-assert_eq "registered lens list" "output-sanitization,prompt-injection" "$domain_lenses"
+assert_eq "registered lens list" "output-sanitization,prompt-injection,agent-isolation" "$domain_lenses"
 
 echo ""
-echo "Test 10: llm-security label color is configured"
+echo "Test 13: llm-security label color is configured"
 label_color="$(jq -r '."llm-security" // empty' "$COLORS_FILE")"
 assert_eq "llm-security label color" "b91c1c" "$label_color"
 
 echo ""
-echo "Test 11: Audit-like mode resolution includes both llm-security lenses"
+echo "Test 14: Audit-like mode resolution includes all llm-security lenses"
 audit_lenses="$(jq -r --arg mode "audit" \
   '.domains | sort_by(.order)[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy") elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content") end) | .id as $d | .lenses[] | $d + "/" + .' "$DOMAINS_FILE")"
 for expected_lens in \
   "llm-security/output-sanitization" \
-  "llm-security/prompt-injection"; do
+  "llm-security/prompt-injection" \
+  "llm-security/agent-isolation"; do
   if grep -qxF "$expected_lens" <<< "$audit_lenses"; then
     PASS=$((PASS + 1))
     TOTAL=$((TOTAL + 1))
@@ -187,13 +228,14 @@ for expected_lens in \
 done
 
 echo ""
-echo "Test 12: Exclusive modes do not include llm-security lenses"
+echo "Test 15: Exclusive modes do not include llm-security lenses"
 for mode in discover deploy opensource content; do
   mode_lenses="$(jq -r --arg mode "$mode" \
     '.domains | sort_by(.order)[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy") elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content") end) | .id as $d | .lenses[] | $d + "/" + .' "$DOMAINS_FILE")"
   for excluded_lens in \
     "llm-security/output-sanitization" \
-    "llm-security/prompt-injection"; do
+    "llm-security/prompt-injection" \
+    "llm-security/agent-isolation"; do
     if grep -qxF "$excluded_lens" <<< "$mode_lenses"; then
       FAIL=$((FAIL + 1))
       TOTAL=$((TOTAL + 1))
