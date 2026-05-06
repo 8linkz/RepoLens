@@ -139,7 +139,7 @@ assert_eq "no mode field" "null" "$iac_mode"
 echo ""
 echo "Test 7: iac domain contains both Terraform lenses"
 iac_lenses="$(jq -r '.domains[] | select(.id == "iac") | .lenses | join(",")' "$DOMAINS_FILE")"
-assert_eq "registered lens list" "terraform-completeness,terraform-security" "$iac_lenses"
+assert_eq "registered lens list" "terraform-completeness,terraform-security,iac-secrets" "$iac_lenses"
 
 echo ""
 echo "Test 8: Audit-like mode resolution includes terraform-security"
