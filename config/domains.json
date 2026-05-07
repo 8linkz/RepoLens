@@ -151,7 +151,7 @@
       "name": "Android",
       "order": 31,
       "mode": "deploy",
-      "lenses": ["apk-overview", "secrets-in-apk", "webview-security", "manifest-audit"]
+      "lenses": ["apk-overview", "secrets-in-apk", "webview-security", "manifest-audit", "exported-components"]
     },
     {
       "id": "open-source-readiness",
