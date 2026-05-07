@@ -5,7 +5,7 @@
 [![CI](https://github.com/TheMorpheus407/RepoLens/actions/workflows/ci.yml/badge.svg)](https://github.com/TheMorpheus407/RepoLens/actions/workflows/ci.yml)
 [![GitHub Stars](https://img.shields.io/github/stars/TheMorpheus407/RepoLens?style=social)](https://github.com/TheMorpheus407/RepoLens)
 
-**Multi-lens code audit tool.** Runs 298 specialist lenses across 31 domains against any git repository or live server and creates remote issues for real findings. Think automated code review, agent-driven pentesting, tool-driven static/dynamic analysis, and infrastructure auditing — all with deep specialization.
+**Multi-lens code audit tool.** Runs 298 specialist lenses across 31 domains against any git repository, live server, or Android APK and creates remote issues for real findings. Think automated code review, agent-driven pentesting, tool-driven static/dynamic analysis, infrastructure auditing, and APK auditing — all with deep specialization.
 
 > [!IMPORTANT]
 > **RepoLens runs AI agents with shell access against your repository, and a full audit can cost hundreds of dollars in API charges.** It is NOT a sandboxed security tool, comes with NO warranty, and you use it entirely at your own risk. **Read [Warnings & Limits](#warnings--limits) before your first run** — especially the cost and security sections.
@@ -199,7 +199,7 @@ RepoLens supports 8 modes. Each mode controls which domains/lenses are visible a
 | `feature`    | 3×          | 26 code/toolgate domains (227 lenses)      | Feature gap discovery — identifies missing capabilities                       |
 | `bugfix`     | 3×          | 26 code/toolgate domains (227 lenses)      | Bug hunting — finds real bugs and defects                                     |
 | `discover`   | 1×          | `discovery` domain (14 lenses)             | Product discovery — brainstorming for product strategy                        |
-| `deploy`     | 1×          | `deployment` domain (26 lenses)            | Server audit — inspects a live server for operational issues                  |
+| `deploy`     | 1×          | `deployment` domain (26 lenses) or `android` domain (1 lens) | Server or Android APK audit — inspects a live server or APK target            |
 | `custom`     | 1×          | 26 code/toolgate domains (227 lenses)      | Change impact analysis — identifies what needs adapting after a change        |
 | `opensource` | 1×          | `open-source-readiness` domain (13 lenses) | Open-source readiness — checks if a repo can go public safely                 |
 | `content`    | 1×          | `content-quality` domain (17 lenses)       | Content audit & creation — audits or creates content from `--source` material |
@@ -221,6 +221,9 @@ RepoLens supports 8 modes. Each mode controls which domains/lenses are visible a
 
 # Deploy — audit a live server (read-only)
 ./repolens.sh --project /srv/myapp --agent claude --mode deploy --parallel --max-issues 5
+
+# Deploy — audit an Android APK target
+./repolens.sh --project ~/my-app/app/build/outputs/apk/debug/app-debug.apk --agent claude --mode deploy
 
 # Custom — change impact analysis
 ./repolens.sh --project ~/my-app --agent claude --change "Switching from REST to GraphQL"
@@ -257,7 +260,7 @@ Usage: repolens.sh --project <path|url> --agent <agent> [OPTIONS]
 
 | Flag                    | Description                                                         |
 | ----------------------- | ------------------------------------------------------------------- |
-| `--project <path\|url>` | Local path or remote Git URL (cloned read-only if URL)              |
+| `--project <path\|url>` | Local path, APK file, or remote Git URL (cloned read-only if URL)   |
 | `--agent <agent>`       | `claude \| codex \| spark \| sparc \| opencode \| opencode/<model>` |
 
 ### Optional Flags
@@ -361,17 +364,18 @@ Raw OpenAPI/Swagger schemas are preferred over docs pages. If no service exposes
 | ------------------------- | ------------ | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Product Discovery**     | `discover`   | 14 lenses | Product gaps, integration opportunities, UX improvements, monetization, developer experience, automation, data insights, scale readiness, community, competitive edge, accessibility, content/education, AI augmentation, workflow orchestration     |
 | **Deployment**            | `deploy`     | 26 lenses | Service health, TLS, DNS, NTP, network security, load balancing, reverse proxy, disk/memory/CPU, containers, database, queues, secrets, SSH, hardening, logs, monitoring, backups, disaster recovery, config drift, dependencies, updates, cron jobs |
+| **Android**               | `deploy`     | 1 lens    | APK overview, package metadata, and device-aware Android audit context                                                                                                                                                                             |
 | **Open Source Readiness** | `opensource` | 13 lenses | Secret leaks, license compliance, dependency licensing, internal exposure, git history secrets, community readiness, documentation gaps, monetization exposure, PII, build reproducibility, security posture, code attribution, trademarks           |
 | **Content Quality**       | `content`    | 17 lenses | Content inventory, metadata, staleness, accessibility, linking, duplication, completeness, consistency, code examples, PII, multimedia, versioning, audience targeting, localization, topic extraction, planning, exercise design                    |
 
 ## How It Works
 
-1. Validates target repo (or server for `deploy` mode), agent CLI, and forge CLI auth (skipped with `--local`)
+1. Validates target repo, server, or APK target, agent CLI, and forge CLI auth (skipped with `--local`)
 2. Resolves lens list (all, `--domain`, or `--focus`)
 3. If `--dry-run`: prints mode, agent, project path, and the full lens list, then exits — no agents run and no prompts are shown
 4. For `--agent claude`: prompts for acknowledgment that `--dangerously-skip-permissions` only skips interactive permission prompts, not safety filters. `--yes` bypasses this prompt
 5. For `deploy` mode: prompts for explicit authorization confirmation (`I confirm I am authorized to audit this server [y/N]`). Displays legal references (§202a StGB, CFAA, EU Directive 2013/40/EU). `--yes` bypasses this prompt
-6. Shows confirmation prompt (target repo, mode, lens count, estimated cost) — requires `y` to proceed, or use `--yes` to skip. If `--max-cost` is set and the estimate exceeds it, a warning is displayed
+6. Shows confirmation prompt (target repo, mode, lens count, estimated cost) — requires `y` to proceed, or use `--yes` to skip. For Android APK deploy targets, the prompt also shows the resolved APK path, detected package name or `unknown`, connected device status, `android` domain, queued lens count, and selected agent before `Proceed? [y/N]`. If no device is connected, dynamic lenses report no device and exit cleanly. If `--max-cost` is set and the estimate exceeds it, a warning is displayed
 7. Ensures remote labels exist (skipped with `--local`)
 8. For each lens:
    - Composes prompt from base template + lens expert focus

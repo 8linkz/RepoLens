@@ -443,6 +443,9 @@ TARGET_TYPE="server"
 ANDROID_APK_PATH=""
 ANDROID_PACKAGE_NAME=""
 ANDROID_HAS_DEVICE="false"
+ANDROID_DEVICE_ID=""
+ANDROID_DEVICE_MODEL=""
+ANDROID_BUILT_FROM_SOURCE="false"
 
 # --- Validate project is a git repo ---
 _orig_project="$PROJECT_PATH"
@@ -482,7 +485,10 @@ if [[ "$MODE" == "deploy" && "$TARGET_TYPE" != "android" ]]; then
     && { [[ -f "$PROJECT_PATH/build.gradle" ]] || [[ -f "$PROJECT_PATH/build.gradle.kts" ]]; }; then
     if declare -F build_android_apk >/dev/null 2>&1; then
       ANDROID_APK_PATH="$(build_android_apk "$PROJECT_PATH" 2>/dev/null || true)"
-      [[ -n "$ANDROID_APK_PATH" ]] && TARGET_TYPE="android"
+      if [[ -n "$ANDROID_APK_PATH" ]]; then
+        TARGET_TYPE="android"
+        ANDROID_BUILT_FROM_SOURCE="true"
+      fi
     fi
   fi
 fi
@@ -499,9 +505,21 @@ if [[ "$MODE" == "deploy" && "$TARGET_TYPE" == "android" && -n "$ANDROID_APK_PAT
       | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -1)"
   fi
   if command -v adb >/dev/null 2>&1; then
-    if adb devices -l 2>/dev/null | awk 'NR>1 && $2=="device" {found=1} END {exit !found}'; then
+    _android_device_line="$(adb devices -l 2>/dev/null | awk 'NR>1 && $2=="device" {print; exit}')"
+    if [[ -n "$_android_device_line" ]]; then
       ANDROID_HAS_DEVICE="true"
+      ANDROID_DEVICE_ID="$(awk '{print $1}' <<< "$_android_device_line")"
+      ANDROID_DEVICE_MODEL="$(awk '{
+        for (i = 1; i <= NF; i++) {
+          if ($i ~ /^model:/) {
+            sub(/^model:/, "", $i)
+            print $i
+            exit
+          }
+        }
+      }' <<< "$_android_device_line")"
     fi
+    unset _android_device_line
   fi
 fi
 export TARGET_TYPE ANDROID_APK_PATH ANDROID_PACKAGE_NAME ANDROID_HAS_DEVICE
@@ -877,6 +895,37 @@ compute_cost_breakdown() {
 }
 
 # --- Confirmation gate ---
+print_android_deploy_preview() {
+  [[ "${TARGET_TYPE:-server}" == "android" ]] || return 0
+
+  local apk_display package_display device_display
+  apk_display="$(_android_log_display_path "${ANDROID_APK_PATH:-}")"
+  package_display="${ANDROID_PACKAGE_NAME:-unknown}"
+
+  if [[ "${ANDROID_HAS_DEVICE:-false}" == "true" && -n "${ANDROID_DEVICE_ID:-}" ]]; then
+    device_display="$ANDROID_DEVICE_ID"
+    if [[ -n "${ANDROID_DEVICE_MODEL:-}" ]]; then
+      device_display+=" (${ANDROID_DEVICE_MODEL})"
+    fi
+  else
+    device_display="none connected - dynamic lenses will report no device and exit cleanly"
+  fi
+
+  echo ""
+  echo "RepoLens Deploy - Android APK target"
+  echo ""
+  echo "  APK:        ${apk_display:-unknown}"
+  if [[ "${ANDROID_BUILT_FROM_SOURCE:-false}" == "true" ]]; then
+    echo "              (built from source via gradlew assembleDebug)"
+  fi
+  echo "  Package:    $package_display"
+  echo "  Device:     $device_display"
+  echo ""
+  echo "  Domain:     android"
+  echo "  Lenses:     $TOTAL_LENSES queued"
+  echo "  Agent:      $AGENT"
+}
+
 confirm_run() {
   if $AUTO_YES; then
     return 0
@@ -929,6 +978,7 @@ confirm_run() {
   else
     echo "Each agent may create remote issues directly on the active forge."
   fi
+  print_android_deploy_preview
   echo ""
   read -rp "Proceed? [y/N] " answer
   case "$answer" in
