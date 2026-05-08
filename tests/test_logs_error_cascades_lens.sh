@@ -13,11 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Tests for issue #130: logs/error-storms lens registration and prompt contract.
+# Tests for issue #131: logs/error-cascades lens registration and prompt contract.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LENS_FILE="$SCRIPT_DIR/prompts/lenses/logs/error-storms.md"
+LENS_FILE="$SCRIPT_DIR/prompts/lenses/logs/error-cascades.md"
 DOMAINS_FILE="$SCRIPT_DIR/config/domains.json"
 
 PASS=0
@@ -90,10 +90,10 @@ mode_lenses() {
 }
 
 echo ""
-echo "=== Test Suite: logs/error-storms lens (issue #130) ==="
+echo "=== Test Suite: logs/error-cascades lens (issue #131) ==="
 echo ""
 
-assert_file_exists "error-storms lens prompt exists" "$LENS_FILE"
+assert_file_exists "error-cascades lens prompt exists" "$LENS_FILE"
 
 lens_content=""
 if [[ -f "$LENS_FILE" ]]; then
@@ -104,10 +104,10 @@ echo ""
 echo "Test 1: frontmatter is exact"
 frontmatter="$(sed -n '1,6p' "$LENS_FILE" 2>/dev/null)"
 expected_frontmatter="---
-id: error-storms
+id: error-cascades
 domain: logs
-name: Error Storm Detector
-role: Error Pattern Analyst
+name: Error Cascade Investigator
+role: Cascading Failure Analyst
 ---"
 assert_eq "frontmatter matches issue contract" "$expected_frontmatter" "$frontmatter"
 
@@ -128,109 +128,85 @@ echo ""
 echo "Test 3: logs domain registration is audit-visible"
 logs_lenses="$(jq -r '.domains[] | select(.id == "logs") | .lenses | join(",")' "$DOMAINS_FILE")"
 logs_mode="$(jq -r '.domains[] | select(.id == "logs") | .mode // "null"' "$DOMAINS_FILE")"
-assert_eq "logs domain registers logs lenses" "error-storms,error-cascades" "$logs_lenses"
+assert_eq "logs domain registers expected lenses" "error-storms,error-cascades" "$logs_lenses"
 assert_eq "logs domain stays mode-less" "null" "$logs_mode"
 audit_lenses="$(mode_lenses audit)"
-assert_contains "audit mode includes logs/error-storms" "logs/error-storms" "$audit_lenses"
+assert_contains "audit mode includes logs/error-cascades" "logs/error-cascades" "$audit_lenses"
 
 for mode in discover deploy opensource content; do
   lenses="$(mode_lenses "$mode")"
-  assert_not_contains "$mode mode excludes logs/error-storms" "logs/error-storms" "$lenses"
+  assert_not_contains "$mode mode excludes logs/error-cascades" "logs/error-cascades" "$lenses"
 done
 
 echo ""
-echo "Test 4: prompt uses generic LOGS_PATH input"
+echo "Test 4: prompt scope and sections match the issue"
+assert_contains "has expert focus section" "## Your Expert Focus" "$lens_content"
+assert_contains "has hunt section" "### What You Hunt For" "$lens_content"
+assert_contains "has investigation section" "### How You Investigate" "$lens_content"
 assert_contains "uses LOGS_PATH variable" '{{LOGS_PATH}}' "$lens_content"
-assert_not_contains "does not prescribe journalctl" "journalctl" "$lens_content"
-assert_not_contains "does not prescribe /var/log" "/var/log" "$lens_content"
 assert_contains "accepts single file" "single file" "$lens_content"
 assert_contains "accepts directory" "directory" "$lens_content"
+assert_contains "is distinct from error-storms" 'distinct from `error-storms`' "$lens_content"
 
 echo ""
-echo "Test 5: prompt covers required storm categories"
+echo "Test 5: prompt covers required cascade categories"
 for term in \
-  "Identical-Fingerprint Storms" \
-  "Near-Duplicate Clusters with Rotating Identifiers" \
-  "Time-Window Bursts" \
-  "Sustained Low-Rate Noise That Adds Up" \
-  "Storm-Then-Silence Patterns"; do
+  "Causal Chains Across Components" \
+  "Fan-Out Failures from a Single Trigger" \
+  "Secondary-Error Masking the Primary" \
+  "Cleanup-of-Cleanup Loops" \
+  "Cross-Process Amplification" \
+  "Escalation Chains Hitting Circuit-Breakers / Retry-Caps / Storm-Caps"; do
   assert_contains "mentions $term" "$term" "$lens_content"
 done
 
 echo ""
-echo "Test 6: prompt covers required thresholds"
+echo "Test 6: prompt requires causality-first investigation"
 for term in \
-  ">= 10 occurrences in any rolling 24-hour window" \
-  ">= 3 distinct sessions / runs / PIDs / hostnames" \
-  "sustained > 5/hour for > 2 hours" \
-  ">= 50 occurrences in any rolling 5-minute burst"; do
-  assert_contains "mentions threshold $term" "$term" "$lens_content"
+  "Sweep for dense error windows" \
+  "Pick the loudest symptom and walk backward in time" \
+  "Verify causality, not just correlation" \
+  "Trace the propagation path" \
+  "Check for reproducibility" \
+  "Locate source emit-sites" \
+  "Identify the recommended break-point"; do
+  assert_contains "mentions $term" "$term" "$lens_content"
 done
 
 echo ""
 echo "Test 7: prompt requires evidence fields"
 for term in \
-  "sanitized event fingerprint" \
-  "2-3 sanitized raw exemplar lines" \
-  "count" \
-  "First-seen" \
-  "last-seen" \
-  "ISO-8601" \
-  "grep -Rn" \
-  "path/to/file.ext:LINE"; do
+  "Root failure" \
+  "The chain" \
+  "Temporal proximity" \
+  "End effect" \
+  "Source emit-sites" \
+  "Repetition evidence" \
+  "Recommended break-point"; do
   assert_contains "requires evidence $term" "$term" "$lens_content"
 done
 
 echo ""
-echo "Test 8: redaction contract covers every exported artifact"
+echo "Test 8: prompt covers filing threshold and splitting rule"
 for term in \
-  "event fingerprints" \
-  "deduplication search strings" \
-  "issue titles" \
-  "issue bodies" \
-  "source snippets" \
-  "log snippets" \
-  "Recommended Fix context"; do
-  assert_contains "redaction applies to $term" "$term" "$lens_content"
-done
-
-for placeholder in \
-  "<TOKEN>" \
-  "<COOKIE>" \
-  "<EMAIL>" \
-  "<API_KEY>" \
-  "<PASSWORD>" \
-  "<REQUEST_BODY_REDACTED>" \
-  "<PII_REDACTED>"; do
-  assert_contains "defines placeholder $placeholder" "$placeholder" "$lens_content"
-done
-
-assert_contains "stable secrets are forbidden in fingerprint" "If a sensitive value is stable across the storm, it is still not allowed in the fingerprint" "$lens_content"
-assert_contains "fingerprint replaces sensitive values" "rotating fields and sensitive values replaced by placeholders" "$lens_content"
-
-echo ""
-echo "Test 9: dedup search is sanitized before gh issue list"
-assert_contains "requires gh issue list dedup" "gh issue list --state open --limit 100 --search" "$lens_content"
-assert_contains "uses sanitized non-sensitive search phrase" "Build a sanitized, non-sensitive search phrase" "$lens_content"
-assert_contains "search from static text" "static text, an error code, an event name, or a format-string fragment" "$lens_content"
-assert_contains "forbids sensitive values in gh search" 'Do not pass credentials, bearer/session tokens, cookies, emails, request bodies, API keys, passwords, or other PII/secrets to `gh issue list --search`' "$lens_content"
-assert_not_contains "does not suggest raw fingerprint search" "--search \"<event fingerprint substring>\"" "$lens_content"
-
-echo ""
-echo "Test 10: prompt references dedup, severity, and out-of-scope limits"
-for term in \
-  "File one issue per distinct fingerprint" \
-  "[CRITICAL]" \
-  "[HIGH]" \
-  "[MEDIUM]" \
-  "[LOW]" \
-  "Single-occurrence errors" \
-  "Silent-failure" \
-  "Log rotation" \
-  "Security log investigations" \
-  "Log-injection"; do
+  ">=3 distinct components / operations" \
+  "within minutes, not hours" \
+  ">=2 occurrences" \
+  "Each cascade gets **ONE issue**" \
+  "Do not file separate issues for each link"; do
   assert_contains "mentions $term" "$term" "$lens_content"
 done
+
+echo ""
+echo "Test 9: prompt avoids forbidden tool-specific commands"
+for term in "grep" "journalctl" "jq"; do
+  assert_not_contains "does not prescribe $term" "$term" "$lens_content"
+done
+
+echo ""
+echo "Test 10: prompt keeps cascades separate from storms"
+assert_contains "routes single-component repetition to error-storms" "Single-component repetition" "$lens_content"
+assert_contains "three lines from one component are not enough" "Three lines from one component are not enough" "$lens_content"
 
 echo ""
 echo "Results: $PASS/$TOTAL passed, $FAIL failed"
