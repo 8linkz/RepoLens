@@ -96,6 +96,7 @@ Options:
   --mode <mode>           audit (default) | feature | bugfix | discover | deploy | custom | opensource | content
   --change <statement>    Change impact analysis — propagates statement across all lenses (implies --mode custom)
   --source <file>         Source material for content creation (PDF, text, markdown — agent reads directly)
+  --logs <path>           Runtime log file or directory for the 'logs' domain (path string only — agent reads it)
   --focus <lens-id>       Run a single lens (e.g., "injection", "dead-code")
   --domain <domain-id>    Run all lenses in one domain (e.g., "security")
   --parallel              Run lenses in parallel (one agent process per lens)
@@ -137,6 +138,7 @@ Examples:
   repolens.sh --project ~/myapp --agent claude --mode content --source ~/docs/curriculum.md --spec lesson-format.md
   repolens.sh --project ~/myapp --agent claude --mode audit --source ~/docs/threat-report.pdf
   repolens.sh --project ~/myapp --agent claude --mode content --focus topic-extraction --source ~/docs/textbook.pdf
+  repolens.sh --project ~/AutoDev --agent claude --logs ~/CybersecurityAssessment/logs/auto-develop/ --domain logs --parallel
   repolens.sh --project ~/myapp --agent claude --hosted --domain toolgate
   repolens.sh --project ~/myapp --agent claude --hosted --focus dast-web
   repolens.sh --project ~/myapp --agent claude --local
@@ -293,6 +295,7 @@ SPEC_FILE=""
 MAX_ISSUES=""
 CHANGE_STATEMENT=""
 SOURCE_FILE=""
+LOGS_PATH=""
 HOSTED=false
 AUTO_YES=false
 MAX_COST=""
@@ -364,6 +367,11 @@ while [[ $# -gt 0 ]]; do
     --source)
       [[ $# -ge 2 ]] || die "Option --source requires a file path argument."
       SOURCE_FILE="$2"
+      shift 2
+      ;;
+    --logs)
+      [[ $# -ge 2 ]] || die "Option --logs requires a file or directory path argument."
+      LOGS_PATH="$2"
       shift 2
       ;;
     --hosted)
@@ -628,6 +636,16 @@ if [[ -n "$SOURCE_FILE" ]]; then
   SOURCE_FILE="$(cd "$(dirname "$SOURCE_FILE")" && pwd)/$(basename "$SOURCE_FILE")"
 fi
 
+# --- Validate logs path ---
+if [[ -n "$LOGS_PATH" ]]; then
+  [[ -e "$LOGS_PATH" ]] || die "Logs path not found: $LOGS_PATH"
+  if [[ -d "$LOGS_PATH" ]]; then
+    LOGS_PATH="$(cd "$LOGS_PATH" && pwd)"
+  else
+    LOGS_PATH="$(cd "$(dirname "$LOGS_PATH")" && pwd)/$(basename "$LOGS_PATH")"
+  fi
+fi
+
 # --- Validate max-issues ---
 if [[ -n "$MAX_ISSUES" ]]; then
   [[ "$MAX_ISSUES" =~ ^[1-9][0-9]*$ ]] || die "--max-issues must be a positive integer, got: $MAX_ISSUES"
@@ -787,6 +805,7 @@ log_info "Agent timeout kill grace: ${AGENT_KILL_GRACE_SECS}s"
 [[ "$MODE" == "content" ]] && log_info "Content mode: content audit & creation (DONE streak: 1)"
 [[ -n "$CHANGE_STATEMENT" ]] && log_info "Change: $CHANGE_STATEMENT"
 [[ -n "$SOURCE_FILE" ]] && log_info "Source: $SOURCE_FILE"
+[[ -n "$LOGS_PATH" ]] && log_info "Logs: $LOGS_PATH"
 $LOCAL_MODE && log_info "Local mode: writing local markdown files to $OUTPUT_DIR"
 if $HOSTED; then
   log_info "Hosted mode: spinning up Docker environment..."
@@ -838,12 +857,26 @@ resolve_lenses() {
 }
 
 LENS_LIST=()
-while IFS= read -r lens_entry; do
-  LENS_LIST+=("$lens_entry")
-done < <(resolve_lenses)
+resolved_lenses_output=""
+if ! resolved_lenses_output="$(resolve_lenses)"; then
+  exit 1
+fi
+if [[ -n "$resolved_lenses_output" ]]; then
+  while IFS= read -r lens_entry; do
+    LENS_LIST+=("$lens_entry")
+  done <<< "$resolved_lenses_output"
+fi
 
 TOTAL_LENSES=${#LENS_LIST[@]}
-[[ "$TOTAL_LENSES" -gt 0 ]] || die "No lenses to run."
+EMPTY_DOMAIN_SELECTED=false
+if [[ "$TOTAL_LENSES" -eq 0 ]]; then
+  if [[ -n "$DOMAIN_FILTER" ]]; then
+    EMPTY_DOMAIN_SELECTED=true
+    log_info "Domain '$DOMAIN_FILTER' has no lenses to run."
+  else
+    die "No lenses to run."
+  fi
+fi
 
 log_info "Resolved $TOTAL_LENSES lens(es) to run"
 
@@ -1323,6 +1356,12 @@ if $DRY_RUN; then
   exit 0
 fi
 
+if $EMPTY_DOMAIN_SELECTED; then
+  log_info "No lenses queued for domain '$DOMAIN_FILTER'; exiting cleanly."
+  echo "No lenses to run for domain '$DOMAIN_FILTER'."
+  exit 0
+fi
+
 confirm_autonomous_mode
 confirm_deploy_authorization
 confirm_run
@@ -1454,6 +1493,7 @@ run_lens() {
   vars+="|FORGE_ISSUE_LIST_CLOSED=$(forge_prompt_issue_list "closed" "$FORGE_REPO_SLUG" "$PROJECT_PATH")"
   [[ -n "$CHANGE_STATEMENT" ]] && vars+="|CHANGE_STATEMENT=${CHANGE_STATEMENT}"
   [[ -n "$SOURCE_FILE" ]] && vars+="|SOURCE_PATH=${SOURCE_FILE}"
+  [[ -n "$LOGS_PATH" ]] && vars+="|LOGS_PATH=${LOGS_PATH}"
   [[ -n "$HOSTED_NETWORK" ]] && vars+="|HOSTED_NETWORK=${HOSTED_NETWORK}"
   if [[ "$MODE" == "deploy" ]]; then
     vars+="|TARGET_TYPE=${TARGET_TYPE}"

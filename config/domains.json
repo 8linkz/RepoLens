@@ -149,7 +149,7 @@
     {
       "id": "android",
       "name": "Android",
-      "order": 31,
+      "order": 32,
       "mode": "deploy",
       "lenses": ["apk-overview", "secrets-in-apk", "apk-dependencies", "native-libraries", "webview-security", "manifest-audit", "network-security-config", "exported-components", "intent-filters", "intent-fuzzing", "drozer-attack-surface", "logcat-leaks", "ssl-pinning-mitm", "frida-runtime", "detection-bypass", "keystore-extraction", "gradle-static-analysis"]
     },
@@ -174,21 +174,27 @@
       "lenses": ["lint", "typecheck", "security-sast", "security-deps", "quality-gates", "test-suite", "dast-web", "dast-injection", "dast-scanner", "dast-headers", "dast-api", "session-zap", "session-sqlmap", "session-nuclei", "session-lighthouse", "session-k6", "session-zap-api", "session-schemathesis"]
     },
     {
+      "id": "logs",
+      "name": "Runtime Log Analysis",
+      "order": 28,
+      "lenses": []
+    },
+    {
       "id": "kubernetes",
       "name": "Kubernetes",
-      "order": 28,
+      "order": 29,
       "lenses": ["security-context", "network-policies", "resource-management", "image-security", "ingress-tls", "rbac", "secrets-management"]
     },
     {
       "id": "llm-security",
       "name": "LLM Security",
-      "order": 29,
+      "order": 30,
       "lenses": ["output-sanitization", "prompt-injection", "agent-isolation", "cost-control", "credential-exposure"]
     },
     {
       "id": "iac",
       "name": "Infrastructure as Code",
-      "order": 30,
+      "order": 31,
       "lenses": ["terraform-completeness", "terraform-security", "iac-secrets", "iac-networking", "iac-compliance"]
     }
   ]
