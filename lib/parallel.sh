@@ -110,9 +110,10 @@ spawn_lens() {
 #
 #   REPOLENS_CHILD_MAX_WAIT (env, seconds): hard ceiling per child.
 #     Default: 144000 (40h). Should be >= MAX_ITERATIONS_PER_LENS *
-#     REPOLENS_AGENT_TIMEOUT plus a safety buffer for non-agent I/O
-#     (gh queries, file locks, etc.). With defaults of 20 iterations *
-#     6000s agent timeout = 120000s, 144000s gives a 24000s buffer.
+#     resolved agent timeout plus a safety buffer for non-agent I/O
+#     (gh queries, file locks, etc.). With the longest default of 20
+#     iterations * 1800s deploy timeout = 36000s, 144000s gives a large
+#     buffer for explicit high timeout overrides.
 #
 #   Bash 4.0-compatible: polls with `kill -0` + `sleep 1`, NOT `wait -t`
 #   (bash 5.1+ only). If a child exceeds the deadline, it is sent SIGTERM,

@@ -138,16 +138,30 @@ Examples:
   repolens.sh --project ~/myapp --agent claude --local --domain security --parallel
 
 Environment:
-  REPOLENS_AGENT_TIMEOUT   Per-invocation agent timeout in seconds (default: 6000).
-                           Applied to every agent call via timeout(1). On timeout
-                           the iteration is logged with [ERROR] and the lens
-                           loop continues to the next iteration.
+  REPOLENS_AGENT_TIMEOUT   Global per-invocation timeout override in seconds.
+                           Wins over every mode-specific value.
+  REPOLENS_AGENT_TIMEOUT_AUDIT
+                           Audit default: 600.
+  REPOLENS_AGENT_TIMEOUT_FEATURE
+                           Feature default: 600.
+  REPOLENS_AGENT_TIMEOUT_BUGFIX
+                           Bugfix default: 600.
+  REPOLENS_AGENT_TIMEOUT_DISCOVER
+                           Discover default: 600.
+  REPOLENS_AGENT_TIMEOUT_DEPLOY
+                           Deploy default: 1800.
+  REPOLENS_AGENT_TIMEOUT_CUSTOM
+                           Custom/change-impact default: 600.
+  REPOLENS_AGENT_TIMEOUT_OPENSOURCE
+                           Open-source readiness default: 600.
+  REPOLENS_AGENT_TIMEOUT_CONTENT
+                           Content default: 600.
   REPOLENS_CHILD_MAX_WAIT  Per-child parallel-worker deadline in seconds
                            (default: 144000). Outer safety net for parallel mode:
                            wait_all polls each background lens and SIGTERM/KILLs
                            any child that exceeds this deadline, then continues
                            with the remaining children. Should be >=
-                           MAX_ITERATIONS_PER_LENS * REPOLENS_AGENT_TIMEOUT plus
+                           MAX_ITERATIONS_PER_LENS * resolved agent timeout plus
                            a buffer for non-agent I/O.
 EOF
 
@@ -392,6 +406,8 @@ case "$MODE" in
   audit|feature|bugfix|discover|deploy|custom|opensource|content) ;;
   *) die "Invalid mode: $MODE (expected 'audit', 'feature', 'bugfix', 'discover', 'deploy', 'custom', 'opensource', or 'content')" ;;
 esac
+
+AGENT_TIMEOUT_SECS="$(resolve_agent_timeout "$MODE")"
 
 # --- Validate --change requirement ---
 if [[ "$MODE" == "custom" && -z "$CHANGE_STATEMENT" ]]; then
@@ -702,6 +718,7 @@ fi
 log_info "RepoLens run $RUN_ID starting"
 log_info "Project: $PROJECT_PATH ($REPO_OWNER/$REPO_NAME)"
 log_info "Agent: $AGENT | Mode: $MODE | Parallel: $PARALLEL"
+log_info "Agent timeout: ${AGENT_TIMEOUT_SECS}s"
 [[ -n "$SPEC_FILE" ]] && log_info "Spec: $SPEC_FILE"
 [[ -n "$MAX_ISSUES" ]] && log_info "Max issues: $MAX_ISSUES (DONE streak: 1)"
 [[ "$MODE" == "discover" ]] && log_info "Discover mode: single-pass brainstorming (DONE streak: 1)"
@@ -1257,9 +1274,9 @@ run_lens() {
     log_info "[$domain/$lens_id] Iteration $iteration"
 
     local agent_rc=0
-    run_agent "$AGENT" "$prompt" "$PROJECT_PATH" >"$output_file" 2>&1 || agent_rc=$?
+    run_agent "$AGENT" "$prompt" "$PROJECT_PATH" "$AGENT_TIMEOUT_SECS" >"$output_file" 2>&1 || agent_rc=$?
     if [[ "$agent_rc" -eq 124 ]]; then
-      log_error "[$domain/$lens_id] agent timed out after ${REPOLENS_AGENT_TIMEOUT:-6000}s on iteration $iteration"
+      log_error "[$domain/$lens_id] agent timed out after ${AGENT_TIMEOUT_SECS}s on iteration $iteration"
     elif [[ "$agent_rc" -ne 0 ]]; then
       log_warn "[$domain/$lens_id] Agent returned non-zero on iteration $iteration. Continuing."
     fi

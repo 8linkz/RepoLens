@@ -15,6 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - `--hosted` service discovery now uses Docker Compose internal/container TCP ports for DAST URLs, falls back to exposed container ports when needed, and keeps published host ports as secondary context instead of pointing scanner containers at host-only NAT ports ([#83](https://github.com/TheMorpheus407/RepoLens/issues/83))
 - `trademark-branding` lens (`--mode opensource`) no longer searches for hardcoded author-specific brand names when auditing third-party repositories — it now dynamically derives search terms from the audited repo's owner and name, plus any additional brand terms the agent discovers from the README or package manifest
 
+### Changed
+
+- Agent invocation timeouts now resolve per mode instead of using one 6000-second default: audit, feature, bugfix, discover, custom, opensource, and content default to 600 seconds; deploy defaults to 1800 seconds; `REPOLENS_AGENT_TIMEOUT` still overrides all mode-specific `REPOLENS_AGENT_TIMEOUT_<MODE>` values ([#110](https://github.com/TheMorpheus407/RepoLens/issues/110))
+
 ### Added
 
 - Android APK deploy targets now show the resolved APK path, package name, device status, `android` domain, queued lens count, and selected agent in the confirmation preview before `Proceed? [y/N]` ([#90](https://github.com/TheMorpheus407/RepoLens/issues/90))

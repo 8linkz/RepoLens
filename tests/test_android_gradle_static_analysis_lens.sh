@@ -180,8 +180,9 @@ chmod +x "$FAKE_BIN/codex"
   export REPOLENS_ENV_CAPTURE="$ENV_CAPTURE"
   export REPOLENS_PWD_CAPTURE="$PWD_CAPTURE"
   export REPOLENS_AGENT_TIMEOUT=5
+  # shellcheck disable=SC1090
   source "$CORE_FILE"
-  run_agent codex "test prompt" "$PROJECT_FIXTURE" >/dev/null 2>&1
+  run_agent codex "test prompt" "$PROJECT_FIXTURE" "$REPOLENS_AGENT_TIMEOUT" >/dev/null 2>&1
 )
 run_agent_rc=$?
 

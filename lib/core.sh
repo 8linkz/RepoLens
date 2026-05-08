@@ -56,7 +56,36 @@ validate_agent() {
 # ---------------------------------------------------------------------------
 # Agent runner
 # ---------------------------------------------------------------------------
-# Usage: run_agent <agent> <prompt> <project_path>
+
+agent_timeout_default_for_mode() {
+  local mode="$1"
+  case "$mode" in
+    deploy) printf '%s\n' 1800 ;;
+    audit|feature|bugfix|discover|custom|opensource|content) printf '%s\n' 600 ;;
+    *) die "Internal error: unsupported mode '$mode' for timeout default" ;;
+  esac
+}
+
+resolve_agent_timeout() {
+  local mode="$1"
+  local mode_upper="${mode^^}"
+  mode_upper="${mode_upper//-/_}"
+  local mode_var="REPOLENS_AGENT_TIMEOUT_${mode_upper}"
+
+  if [[ -n "${REPOLENS_AGENT_TIMEOUT:-}" ]]; then
+    printf '%s\n' "$REPOLENS_AGENT_TIMEOUT"
+    return
+  fi
+
+  if [[ -n "${!mode_var:-}" ]]; then
+    printf '%s\n' "${!mode_var}"
+    return
+  fi
+
+  agent_timeout_default_for_mode "$mode"
+}
+
+# Usage: run_agent <agent> <prompt> <project_path> [timeout_secs]
 #
 # Executes the given agent inside the target repository directory.
 # The work happens in a subshell so the caller's cwd is never affected.
@@ -65,7 +94,7 @@ run_agent() {
   local agent="$1"
   local prompt="$2"
   local project_path="$3"
-  local timeout_secs="${REPOLENS_AGENT_TIMEOUT:-6000}"
+  local timeout_secs="${4:-${REPOLENS_AGENT_TIMEOUT:-600}}"
 
   [[ -d "$project_path" ]] || die "Project path does not exist: $project_path"
 
