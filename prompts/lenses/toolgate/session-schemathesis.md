@@ -158,3 +158,7 @@ Do not blindly report every schemathesis failure — validate each one.
 - Expected vs actual behavior
 - The full `schemathesis run ...` command that triggers the bug (so maintainers
   can reproduce with a single copy-paste)
+
+### Termination
+
+After you have created all real GitHub issues for your confirmed findings (or if there are no findings to report), output **DONE** as the very first word of your response AND **DONE** as the very last word.

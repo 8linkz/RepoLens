@@ -61,3 +61,7 @@ docker run --rm --network {{HOSTED_NETWORK}} projectdiscovery/nuclei \
 - Reproduction: the nuclei command to re-run this specific template
 
 **6. Deduplication:** If the same template matches multiple endpoints of the same service for the same root cause, create one issue and list all affected URLs. Different templates on the same endpoint get separate issues.
+
+### Termination
+
+After you have created all real GitHub issues for your confirmed findings (or if there are no findings to report), output **DONE** as the very first word of your response AND **DONE** as the very last word.

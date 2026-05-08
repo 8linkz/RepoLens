@@ -60,3 +60,7 @@ docker run --rm --network {{HOSTED_NETWORK}} sullo/nikto \
 - Which web server or framework the fix applies to (nginx, Apache, Express, etc.)
 
 **6. Deduplication:** Group closely related findings from the same root cause (e.g. multiple missing headers can be one issue titled "Missing Security Headers" listing all of them). Unrelated findings on the same endpoint get separate issues.
+
+### Termination
+
+After you have created all real GitHub issues for your confirmed findings (or if there are no findings to report), output **DONE** as the very first word of your response AND **DONE** as the very last word.

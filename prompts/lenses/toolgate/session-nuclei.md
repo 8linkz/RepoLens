@@ -128,3 +128,7 @@ Create one GitHub issue per confirmed finding with:
   - Remediation guidance specific to the detected framework
 - Do NOT create issues for informational or false-positive findings
 - If zero confirmed findings exist, report that the scan completed cleanly with no issues
+
+### Termination
+
+After you have created all real GitHub issues for your confirmed findings (or if there are no findings to report), output **DONE** as the very first word of your response AND **DONE** as the very last word.

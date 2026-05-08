@@ -154,3 +154,7 @@ For each discovered endpoint that touches the database:
 - Never use destructive payloads — `batch: true` ensures sqlmap uses safe defaults.
 - If sqlmap discovers credentials or sensitive data during testing, do NOT include the actual data in the issue — only note that data extraction was possible.
 - Clean up the Docker container even if the scan fails or errors out — use a trap or ensure cleanup runs in all code paths.
+
+### Termination
+
+After you have created all real GitHub issues for your confirmed findings (or if there are no findings to report), output **DONE** as the very first word of your response AND **DONE** as the very last word.

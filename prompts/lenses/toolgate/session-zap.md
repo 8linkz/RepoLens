@@ -168,8 +168,6 @@ docker stop repolens-zap-$$ && docker rm repolens-zap-$$
 
 **Deduplication:** Same `pluginid` across multiple URLs for the same root cause = one issue listing all affected URLs. Different plugin IDs always get separate issues.
 
-After all issues are created, output **DONE**.
-
 ### Safety Rules
 
 - Only scan services listed in the `## Hosted Environment` section. Never scan external URLs.
@@ -177,3 +175,7 @@ After all issues are created, output **DONE**.
 - Active scanning is authorized — the hosted environment is an isolated test instance.
 - If you cannot determine auth credentials, scan unauthenticated surfaces and note the limitation in a `[MEDIUM]` issue titled `Unauthenticated scan only — auth credentials not discovered`.
 - Cleanup is mandatory: the ZAP container must be removed at the end of every run, successful or not.
+
+### Termination
+
+After you have created all real GitHub issues for your confirmed findings (or if there are no findings to report), output **DONE** as the very first word of your response AND **DONE** as the very last word.

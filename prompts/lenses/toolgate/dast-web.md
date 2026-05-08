@@ -64,3 +64,7 @@ This lens requires the `--hosted` flag. If the prompt does NOT contain a `## Hos
 7. **Deduplication** — if the same alert (same `pluginid`) appears on multiple endpoints, create one issue and list all affected URLs in the body.
 
 8. **Safety** — only scan service URLs from the hosted environment section. Never scan external URLs or services outside the internal network.
+
+### Termination
+
+After you have created all real GitHub issues for your confirmed findings (or if there are no findings to report), output **DONE** as the very first word of your response AND **DONE** as the very last word.

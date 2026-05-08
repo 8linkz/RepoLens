@@ -303,3 +303,7 @@ Ensure cleanup runs even if earlier phases error out — wrap in a trap or ensur
   curl -s "http://ZAP:8091/JSON/ascan/action/setOptionDelayInMs/" \
     -d "Integer=1000"
   ```
+
+### Termination
+
+After you have created all real GitHub issues for your confirmed findings (or if there are no findings to report), output **DONE** as the very first word of your response AND **DONE** as the very last word.

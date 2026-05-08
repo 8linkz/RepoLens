@@ -63,3 +63,7 @@ docker run --rm --network {{HOSTED_NETWORK}} schemathesis/schemathesis run \
 - Remediation: input validation to add, schema to fix, or error handler to implement
 
 **6. Deduplication:** If the same check fails on the same endpoint for multiple inputs with the same root cause (e.g. any string over 255 chars causes 500), create one issue with representative examples. Different endpoints or different check types get separate issues.
+
+### Termination
+
+After you have created all real GitHub issues for your confirmed findings (or if there are no findings to report), output **DONE** as the very first word of your response AND **DONE** as the very last word.

@@ -171,3 +171,7 @@ Group the same issue across multiple pages into a single issue. Different issues
    - Top 3 most impactful improvements the team could make
 
 3. **Clean up** any temporary files or Docker containers created during the session.
+
+### Termination
+
+After you have created all real GitHub issues for your confirmed findings (or if there are no findings to report), output **DONE** as the very first word of your response AND **DONE** as the very last word.

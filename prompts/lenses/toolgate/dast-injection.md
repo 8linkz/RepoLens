@@ -64,3 +64,7 @@ This lens requires the `--hosted` flag. If the prompt does NOT contain a `## Hos
    - If sqlmap asks to exploit further, always decline (handled by `--batch`).
 
 8. **Report summary** — after testing all endpoints, briefly list: total endpoints discovered, endpoints tested, confirmed injections found.
+
+### Termination
+
+After you have created all real GitHub issues for your confirmed findings (or if there are no findings to report), output **DONE** as the very first word of your response AND **DONE** as the very last word.

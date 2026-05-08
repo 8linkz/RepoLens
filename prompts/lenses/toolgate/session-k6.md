@@ -162,3 +162,7 @@ If zero performance issues are found, report that load testing completed cleanly
 - Include `sleep()` between requests to avoid hammering services with unrealistic traffic patterns.
 - Do not test destructive endpoints (DELETE) under load unless they target test-specific resources.
 - Clean up all temporary files even if the test fails or errors out.
+
+### Termination
+
+After you have created all real GitHub issues for your confirmed findings (or if there are no findings to report), output **DONE** as the very first word of your response AND **DONE** as the very last word.
