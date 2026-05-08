@@ -170,9 +170,13 @@ Environment:
                            MAX_ITERATIONS_PER_LENS * resolved agent timeout plus
                            a buffer for rate-limit sleep and non-agent I/O.
   REPOLENS_HEARTBEAT_INTERVAL
-                           Parallel-worker heartbeat interval in seconds
-                           (default: 60). Logs currently running lenses with
-                           elapsed runtime; set to 0 to disable.
+                           Per-lens heartbeat file interval in seconds
+                           (default: 15), and parallel-worker log heartbeat
+                           interval in seconds (default: 60). Set to 0 to
+                           disable both when this shared variable is used.
+  REPOLENS_LENS_HEARTBEAT_INTERVAL
+                           Per-lens heartbeat file interval override in
+                           seconds. Wins over REPOLENS_HEARTBEAT_INTERVAL.
   REPOLENS_CLEANUP_GRACE   Interrupt cleanup grace in seconds (default: 5).
                            On Ctrl-C or TERM, tracked parallel workers receive
                            SIGTERM, are polled for this grace period, then any
@@ -677,6 +681,8 @@ fi
 # --- Directories ---
 LOG_BASE="$SCRIPT_DIR/logs/$RUN_ID"
 mkdir -p "$LOG_BASE"
+HEARTBEAT_DIR="$LOG_BASE/.heartbeat"
+mkdir -p "$HEARTBEAT_DIR"
 SUMMARY_FILE="$LOG_BASE/summary.json"
 DOMAINS_FILE="$SCRIPT_DIR/config/domains.json"
 COLORS_FILE="$SCRIPT_DIR/config/label-colors.json"
@@ -830,6 +836,185 @@ is_lens_completed() {
 
 mark_lens_completed() {
   echo "$1" >> "$completed_lenses_file"
+}
+
+LENS_HEARTBEAT_INTERVAL_DEFAULT=15
+
+resolve_lens_heartbeat_interval() {
+  local interval source_name
+
+  if [[ -n "${REPOLENS_LENS_HEARTBEAT_INTERVAL:-}" ]]; then
+    interval="$REPOLENS_LENS_HEARTBEAT_INTERVAL"
+    source_name="REPOLENS_LENS_HEARTBEAT_INTERVAL"
+  elif [[ -n "${REPOLENS_HEARTBEAT_INTERVAL:-}" ]]; then
+    interval="$REPOLENS_HEARTBEAT_INTERVAL"
+    source_name="REPOLENS_HEARTBEAT_INTERVAL"
+  else
+    interval="$LENS_HEARTBEAT_INTERVAL_DEFAULT"
+    source_name="default"
+  fi
+
+  if [[ ! "$interval" =~ ^[0-9]+$ ]]; then
+    log_warn "Invalid $source_name='$interval'; using default ${LENS_HEARTBEAT_INTERVAL_DEFAULT}s for per-lens heartbeat files."
+    interval="$LENS_HEARTBEAT_INTERVAL_DEFAULT"
+  else
+    interval=$((10#$interval))
+  fi
+
+  printf '%s\n' "$interval"
+}
+
+sanitize_heartbeat_component() {
+  printf '%s' "$1" | sed 's/[^A-Za-z0-9_.-]/_/g'
+}
+
+lens_heartbeat_key() {
+  local domain="$1" lens_id="$2"
+  local safe_domain safe_lens_id
+  safe_domain="$(sanitize_heartbeat_component "$domain")"
+  safe_lens_id="$(sanitize_heartbeat_component "$lens_id")"
+  printf '%s__%s\n' "$safe_domain" "$safe_lens_id"
+}
+
+lens_heartbeat_path() {
+  local domain="$1" lens_id="$2"
+  printf '%s/%s.json\n' "$HEARTBEAT_DIR" "$(lens_heartbeat_key "$domain" "$lens_id")"
+}
+
+lens_heartbeat_iteration_path() {
+  local domain="$1" lens_id="$2"
+  printf '%s/.%s.iteration\n' "$HEARTBEAT_DIR" "$(lens_heartbeat_key "$domain" "$lens_id")"
+}
+
+read_lens_heartbeat_iteration() {
+  local iteration_file="$1"
+  local iteration=0
+
+  if [[ -f "$iteration_file" ]]; then
+    IFS= read -r iteration < "$iteration_file" || iteration=0
+  fi
+  if [[ ! "$iteration" =~ ^[0-9]+$ ]]; then
+    iteration=0
+  else
+    iteration=$((10#$iteration))
+  fi
+
+  printf '%s\n' "$iteration"
+}
+
+write_lens_heartbeat_iteration() {
+  local iteration_file="$1" iteration="$2"
+  local tmp_file="${iteration_file}.tmp.${BASHPID}"
+
+  printf '%s\n' "$iteration" > "$tmp_file" && mv -f "$tmp_file" "$iteration_file"
+}
+
+write_lens_heartbeat() {
+  local heartbeat_file="$1" run_id="$2" domain="$3" lens_id="$4" owner_pid="$5" iteration="$6" started_at="$7"
+  local tmp_file="${heartbeat_file}.tmp.${BASHPID}"
+
+  [[ "$owner_pid" =~ ^[0-9]+$ ]] || owner_pid=0
+  [[ "$iteration" =~ ^[0-9]+$ ]] || iteration=0
+
+  jq -cn \
+    --arg run_id "$run_id" \
+    --arg domain "$domain" \
+    --arg lens_id "$lens_id" \
+    --arg started_at "$started_at" \
+    --arg last_heartbeat_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg state "running" \
+    --argjson pid "$owner_pid" \
+    --argjson iteration "$iteration" \
+    '{
+      run_id: $run_id,
+      domain: $domain,
+      lens_id: $lens_id,
+      pid: $pid,
+      iteration: $iteration,
+      started_at: $started_at,
+      last_heartbeat_at: $last_heartbeat_at,
+      state: $state
+    }' > "$tmp_file" && mv -f "$tmp_file" "$heartbeat_file"
+}
+
+start_lens_heartbeat_writer() {
+  local __result_var="$1"
+  local heartbeat_file="$2" iteration_file="$3" run_id="$4" domain="$5" lens_id="$6" owner_pid="$7" started_at="$8" interval="$9"
+
+  printf -v "$__result_var" '%s' ""
+  (( interval > 0 )) || return 0
+
+  (
+    heartbeat_sleep_pid=""
+    trap '[[ -n "$heartbeat_sleep_pid" ]] && kill "$heartbeat_sleep_pid" 2>/dev/null; exit 0' TERM INT
+
+    while true; do
+      command -p sleep "$interval" &
+      heartbeat_sleep_pid=$!
+      wait "$heartbeat_sleep_pid" 2>/dev/null || exit 0
+      heartbeat_sleep_pid=""
+
+      kill -0 "$owner_pid" 2>/dev/null || exit 0
+      iteration="$(read_lens_heartbeat_iteration "$iteration_file")"
+      write_lens_heartbeat "$heartbeat_file" "$run_id" "$domain" "$lens_id" "$owner_pid" "$iteration" "$started_at" || true
+    done
+  ) &
+
+  printf -v "$__result_var" '%s' "$!"
+}
+
+stop_lens_heartbeat_writer() {
+  local writer_pid="$1" heartbeat_file="$2" iteration_file="$3" clean_completion="${4:-false}"
+
+  if [[ "$writer_pid" =~ ^[0-9]+$ ]]; then
+    if kill -0 "$writer_pid" 2>/dev/null; then
+      kill "$writer_pid" 2>/dev/null || true
+    fi
+    wait "$writer_pid" 2>/dev/null || true
+  fi
+
+  if [[ -n "$iteration_file" ]]; then
+    rm -f "${iteration_file}" "${iteration_file}.tmp."*
+  fi
+  if [[ -n "$heartbeat_file" ]]; then
+    rm -f "${heartbeat_file}.tmp."*
+  fi
+  if [[ "$clean_completion" == "true" && -n "$heartbeat_file" ]]; then
+    rm -f "$heartbeat_file"
+  fi
+
+  return 0
+}
+
+extract_exit_trap_action() {
+  local trap_spec="$1"
+  [[ -n "$trap_spec" ]] || return 0
+  printf '%s\n' "$trap_spec" | sed -n "s/^trap -- '\(.*\)' EXIT$/\1/p"
+}
+
+restore_exit_trap() {
+  local trap_spec="$1"
+  if [[ -n "$trap_spec" ]]; then
+    eval "$trap_spec"
+  else
+    trap - EXIT
+  fi
+}
+
+run_lens_heartbeat_exit_trap() {
+  local previous_action="${_REPOLENS_LENS_PREVIOUS_EXIT_ACTION:-}"
+
+  stop_lens_heartbeat_writer \
+    "${_REPOLENS_LENS_HEARTBEAT_WRITER_PID:-}" \
+    "${_REPOLENS_LENS_HEARTBEAT_FILE:-}" \
+    "${_REPOLENS_LENS_HEARTBEAT_ITERATION_FILE:-}" \
+    "false"
+
+  if [[ "$previous_action" == *"sem_token_remove"* ]]; then
+    sem_token_remove "${_REPOLENS_LENS_HEARTBEAT_LENS_ENTRY:-}"
+  elif [[ -n "$previous_action" ]]; then
+    eval "$previous_action"
+  fi
 }
 
 # --- Cost estimation (token-based, model-aware, repo-size-aware) ---
@@ -1260,6 +1445,30 @@ run_lens() {
   local lens_log_dir="$LOG_BASE/$domain/$lens_id"
   mkdir -p "$lens_log_dir"
 
+  local heartbeat_interval heartbeat_file heartbeat_iteration_file heartbeat_started_at heartbeat_owner_pid heartbeat_writer_pid
+  local previous_exit_trap previous_exit_action
+  heartbeat_interval="$(resolve_lens_heartbeat_interval)"
+  heartbeat_file="$(lens_heartbeat_path "$domain" "$lens_id")"
+  heartbeat_iteration_file="$(lens_heartbeat_iteration_path "$domain" "$lens_id")"
+  heartbeat_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  heartbeat_owner_pid="$BASHPID"
+  heartbeat_writer_pid=""
+
+  if (( heartbeat_interval > 0 )); then
+    previous_exit_trap="$(trap -p EXIT || true)"
+    previous_exit_action="$(extract_exit_trap_action "$previous_exit_trap")"
+    _REPOLENS_LENS_PREVIOUS_EXIT_ACTION="$previous_exit_action"
+    _REPOLENS_LENS_HEARTBEAT_LENS_ENTRY="$lens_entry"
+    _REPOLENS_LENS_HEARTBEAT_FILE="$heartbeat_file"
+    _REPOLENS_LENS_HEARTBEAT_ITERATION_FILE="$heartbeat_iteration_file"
+    _REPOLENS_LENS_HEARTBEAT_WRITER_PID=""
+    trap 'run_lens_heartbeat_exit_trap' EXIT
+
+    write_lens_heartbeat_iteration "$heartbeat_iteration_file" 0 || true
+    start_lens_heartbeat_writer heartbeat_writer_pid "$heartbeat_file" "$heartbeat_iteration_file" "$RUN_ID" "$domain" "$lens_id" "$heartbeat_owner_pid" "$heartbeat_started_at" "$heartbeat_interval"
+    _REPOLENS_LENS_HEARTBEAT_WRITER_PID="$heartbeat_writer_pid"
+  fi
+
   log_info "[$domain/$lens_id] Starting lens: $lens_name"
 
   # Snapshot issue count before loop.
@@ -1298,6 +1507,10 @@ run_lens() {
     local output_file="$lens_log_dir/iteration-${iteration}-${timestamp}.txt"
 
     log_info "[$domain/$lens_id] Iteration $iteration"
+    if (( heartbeat_interval > 0 )); then
+      write_lens_heartbeat_iteration "$heartbeat_iteration_file" "$iteration" || true
+      write_lens_heartbeat "$heartbeat_file" "$RUN_ID" "$domain" "$lens_id" "$heartbeat_owner_pid" "$iteration" "$heartbeat_started_at" || true
+    fi
 
     local agent_rc=0
     run_agent "$AGENT" "$prompt" "$PROJECT_PATH" "$AGENT_TIMEOUT_SECS" "$AGENT_KILL_GRACE_SECS" >"$output_file" 2>&1 || agent_rc=$?
@@ -1433,6 +1646,16 @@ run_lens() {
   record_lens "$SUMMARY_FILE" "$domain" "$lens_id" "$iteration" "$exit_status" "$lens_issues" "$rate_limit_sleep_seconds"
   if [[ "$exit_status" != "rate-limited" ]]; then
     mark_lens_completed "$lens_entry"
+  fi
+
+  if (( heartbeat_interval > 0 )); then
+    stop_lens_heartbeat_writer "$heartbeat_writer_pid" "$heartbeat_file" "$heartbeat_iteration_file" "true"
+    restore_exit_trap "$previous_exit_trap"
+    _REPOLENS_LENS_PREVIOUS_EXIT_ACTION=""
+    _REPOLENS_LENS_HEARTBEAT_LENS_ENTRY=""
+    _REPOLENS_LENS_HEARTBEAT_FILE=""
+    _REPOLENS_LENS_HEARTBEAT_ITERATION_FILE=""
+    _REPOLENS_LENS_HEARTBEAT_WRITER_PID=""
   fi
 
   log_info "[$domain/$lens_id] Finished after $iteration iteration(s), $lens_issues issue(s)"

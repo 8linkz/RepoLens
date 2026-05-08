@@ -23,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- Per-lens heartbeat files under `logs/<run-id>/.heartbeat/<domain>__<lens-id>.json` now expose active lens liveness, current iteration, timestamps, and worker PID for operators and status tooling; configure file heartbeats with `REPOLENS_LENS_HEARTBEAT_INTERVAL` or the shared `REPOLENS_HEARTBEAT_INTERVAL` fallback ([#120](https://github.com/TheMorpheus407/RepoLens/issues/120))
 - Android APK deploy targets now show the resolved APK path, package name, device status, `android` domain, queued lens count, and selected agent in the confirmation preview before `Proceed? [y/N]` ([#90](https://github.com/TheMorpheus407/RepoLens/issues/90))
 - `--hosted` now surfaces detected OpenAPI/Swagger JSON/YAML schemas, or useful docs UI hints, in a `Detected API specs` prompt block for DAST agents ([#85](https://github.com/TheMorpheus407/RepoLens/issues/85))
 - `--hosted` service details now include Docker/HTTP health labels for discovered DAST targets and warn before scanning when every discovered HTTP service is unhealthy or unreachable ([#84](https://github.com/TheMorpheus407/RepoLens/issues/84))

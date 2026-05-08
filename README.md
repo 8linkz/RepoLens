@@ -345,8 +345,25 @@ REPOLENS_AGENT_TIMEOUT=300 ./repolens.sh --project ~/my-app --agent codex --focu
 | `REPOLENS_AGENT_TIMEOUT_CONTENT`     | `600`    | Content-mode timeout when the global override is unset.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `REPOLENS_RATE_LIMIT_MAX_SLEEP`      | `21600`  | Maximum parsed agent rate-limit wait in seconds before RepoLens falls back to the terminal rate-limit abort path. When an agent exits non-zero with a known rate-limit signature and a parseable resume time within this cap, RepoLens sleeps until that time plus a 60-second buffer, retries the same lens once, and records `rate_limit_sleep_seconds` in `summary.json`. Unparseable resume times, waits beyond this cap, or a second rate-limit after retry abort the run.                                                                                 |
 | `REPOLENS_CHILD_MAX_WAIT`            | `144000` | Per-child deadline in seconds for parallel-mode workers. `wait_all` polls each background lens with `kill -0` + `sleep 1` and, if a child exceeds this deadline, sends SIGTERM (10s grace) then SIGKILL, logs `[lens_id] exceeded REPOLENS_CHILD_MAX_WAIT=Ns`, and continues reaping the remaining children. Outer safety net for parallel mode. Should be ≥ `MAX_ITERATIONS_PER_LENS × resolved agent timeout` plus a buffer for rate-limit sleep and non-agent I/O (forge queries, file locks). |
-| `REPOLENS_HEARTBEAT_INTERVAL`        | `60`     | Parallel-worker heartbeat interval in seconds. While more than one child is still running, `wait_all` logs `[heartbeat] N running: domain/lens (elapsed)` through the standard logging channels. Set to `0` to disable heartbeat output.                                                                                                                                                                                                                                                                      |
+| `REPOLENS_HEARTBEAT_INTERVAL`        | `60` for parallel log output, `15` for per-lens files | Shared heartbeat interval in seconds. While more than one parallel child is still running, `wait_all` logs `[heartbeat] N running: domain/lens (elapsed)` through the standard logging channels. Active lenses also write JSON heartbeat files under `logs/<run-id>/.heartbeat/` when `REPOLENS_LENS_HEARTBEAT_INTERVAL` is unset. Set to `0` to disable parallel log heartbeats and, when no lens-specific override is set, per-lens heartbeat files.                                                                      |
+| `REPOLENS_LENS_HEARTBEAT_INTERVAL`   | unset    | Per-lens heartbeat file interval override in seconds. Wins over `REPOLENS_HEARTBEAT_INTERVAL` for files only; default file interval is `15` seconds when both variables are unset. Set to `0` to disable per-lens heartbeat files without changing parallel log heartbeats.                                                                                                                                                                                                                                     |
 | `REPOLENS_CLEANUP_GRACE`             | `5`      | Interrupt cleanup grace in seconds for tracked parallel workers. When a parallel run receives Ctrl-C or TERM, RepoLens asks tracked workers to stop, waits up to this many seconds, then force-stops any workers still running so cleanup returns. Set to `0` to skip the grace wait. Must be a non-negative integer.                                                                                                                                                                                            |
+
+### Per-Lens Heartbeat Files
+
+Each running lens writes a machine-readable heartbeat at:
+
+```text
+logs/<run-id>/.heartbeat/<domain>__<lens-id>.json
+```
+
+Inspect the file from another terminal while a run is active:
+
+```bash
+jq . logs/<run-id>/.heartbeat/<domain>__<lens-id>.json
+```
+
+The file is rewritten atomically while the lens is active and removed after clean lens completion. If the process dies abnormally, the last heartbeat is left behind so status tools and operators can treat it as stale. The JSON contains `run_id`, `domain`, `lens_id`, numeric `pid`, current `iteration`, `started_at`, `last_heartbeat_at`, and `state: "running"`.
 
 ## Domains & Lenses (314 total across 31 domains)
 
@@ -446,6 +463,7 @@ Completed lenses are skipped. The run ID is printed at startup and found in `log
 - **Remote Issues** — Created directly in the target repo with severity-prefixed titles and domain labels (default)
 - **Local Markdown** — With `--local`, findings are written as individual markdown files to `<output-dir>/<domain>/<lens-id>/NNN-slug.md` with YAML frontmatter (title, severity, domain, lens, labels). Default output directory: `logs/<run-id>/issues/`
 - **Logs** — `logs/<run-id>/<domain>/<lens>/iteration-N-TIMESTAMP.txt`
+- **Heartbeats** — Active lenses write `logs/<run-id>/.heartbeat/<domain>__<lens-id>.json`; files are removed after clean lens completion and left behind if a worker exits abnormally
 - **Summary** — `logs/<run-id>/summary.json`, including per-lens status, iterations, issue counts, and `rate_limit_sleep_seconds`
 
 ## Development
