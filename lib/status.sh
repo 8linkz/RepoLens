@@ -16,6 +16,8 @@
 # RepoLens - aggregated run status snapshots
 
 STATUS_INTERVAL_DEFAULT=10
+STATUS_STALE_WARN_DEFAULT=120
+STATUS_STALE_ERROR_DEFAULT=600
 STATUS_UPDATER_PID=""
 STATUS_LENSES_FILE=""
 # shellcheck disable=SC2034 # Shared with repolens.sh after this file is sourced.
@@ -26,6 +28,38 @@ status_log_warn() {
     log_warn "$1"
   else
     printf 'WARN: %s\n' "$1" >&2
+  fi
+}
+
+status_emit_transition_log() {
+  local level="$1" run_id="$2" log_base="$3" message="$4"
+  local log_file
+
+  case "$level" in
+    INFO)
+      if declare -F log_info >/dev/null 2>&1 && [[ -n "${_REPOLENS_LOG_FILE:-}" ]]; then
+        log_info "$message"
+        return
+      fi
+      ;;
+    WARN)
+      if declare -F log_warn >/dev/null 2>&1 && [[ -n "${_REPOLENS_LOG_FILE:-}" ]]; then
+        log_warn "$message"
+        return
+      fi
+      ;;
+    ERROR)
+      if declare -F log_error >/dev/null 2>&1 && [[ -n "${_REPOLENS_LOG_FILE:-}" ]]; then
+        log_error "$message"
+        return
+      fi
+      ;;
+  esac
+
+  if [[ -n "$run_id" && -n "$log_base" ]]; then
+    mkdir -p "$log_base" 2>/dev/null || true
+    log_file="$log_base/$run_id.log"
+    printf '[%s] [%s] %s\n' "$level" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$message" >> "$log_file" 2>/dev/null || true
   fi
 }
 
@@ -44,6 +78,52 @@ resolve_status_interval() {
   fi
 
   printf '%s\n' "$interval"
+}
+
+status_resolve_nonnegative_seconds() {
+  local env_name="$1" default_value="$2" purpose="$3"
+  local raw_value="${!env_name:-$default_value}"
+  local value
+
+  if [[ ! "$raw_value" =~ ^[0-9]+$ ]]; then
+    status_log_warn "Invalid $env_name='$raw_value'; using default ${default_value}s for $purpose."
+    printf '%s\n' "$default_value"
+    return
+  fi
+
+  value=$((10#$raw_value))
+  printf '%s\n' "$value"
+}
+
+resolve_status_stale_thresholds() {
+  local warn_seconds error_seconds
+
+  warn_seconds="$(status_resolve_nonnegative_seconds "REPOLENS_STALE_WARN_SECONDS" "$STATUS_STALE_WARN_DEFAULT" "stale heartbeat warnings")"
+  error_seconds="$(status_resolve_nonnegative_seconds "REPOLENS_STALE_ERROR_SECONDS" "$STATUS_STALE_ERROR_DEFAULT" "stale heartbeat errors")"
+
+  if (( error_seconds <= warn_seconds )); then
+    if (( STATUS_STALE_ERROR_DEFAULT > warn_seconds )); then
+      status_log_warn "Invalid stale heartbeat thresholds: REPOLENS_STALE_ERROR_SECONDS (${error_seconds}s) must be greater than warning threshold (${warn_seconds}s); using default ${STATUS_STALE_ERROR_DEFAULT}s for errors."
+      error_seconds="$STATUS_STALE_ERROR_DEFAULT"
+    else
+      status_log_warn "Invalid stale heartbeat thresholds: REPOLENS_STALE_ERROR_SECONDS (${error_seconds}s) must be greater than warning threshold (${warn_seconds}s); using ${warn_seconds}s + 1 for errors."
+      error_seconds=$((warn_seconds + 1))
+    fi
+  fi
+
+  printf '%s %s\n' "$warn_seconds" "$error_seconds"
+}
+
+resolve_status_stale_warn_seconds() {
+  local warn_seconds _error_seconds
+  read -r warn_seconds _error_seconds < <(resolve_status_stale_thresholds)
+  printf '%s\n' "$warn_seconds"
+}
+
+resolve_status_stale_error_seconds() {
+  local _warn_seconds error_seconds
+  read -r _warn_seconds error_seconds < <(resolve_status_stale_thresholds)
+  printf '%s\n' "$error_seconds"
 }
 
 write_status_snapshot() {
@@ -198,11 +278,217 @@ write_status_snapshot() {
   return "$rc"
 }
 
+status_stale_state_path() {
+  local heartbeat_file="$1"
+  printf '%s.state\n' "${heartbeat_file%.json}"
+}
+
+status_stale_age_path() {
+  local heartbeat_file="$1"
+  printf '%s.state-age\n' "${heartbeat_file%.json}"
+}
+
+status_read_stale_state() {
+  local state_file="$1"
+  local state="ok"
+
+  if [[ -f "$state_file" ]]; then
+    IFS= read -r state < "$state_file" || state="ok"
+  fi
+
+  case "$state" in
+    ok|warn|error)
+      printf '%s\n' "$state"
+      ;;
+    *)
+      printf 'ok\n'
+      ;;
+  esac
+}
+
+status_read_stale_age() {
+  local age_file="$1" fallback="$2"
+  local age="$fallback"
+
+  if [[ -f "$age_file" ]]; then
+    IFS= read -r age < "$age_file" || age="$fallback"
+  fi
+
+  if [[ ! "$age" =~ ^[0-9]+$ ]]; then
+    age="$fallback"
+  else
+    age=$((10#$age))
+  fi
+
+  printf '%s\n' "$age"
+}
+
+status_write_stale_state() {
+  local state_file="$1" state="$2"
+  local tmp_file="${state_file}.tmp.${BASHPID}"
+
+  printf '%s\n' "$state" > "$tmp_file" && mv -f "$tmp_file" "$state_file"
+}
+
+status_write_stale_age() {
+  local age_file="$1" age="$2"
+  local tmp_file="${age_file}.tmp.${BASHPID}"
+
+  [[ "$age" =~ ^[0-9]+$ ]] || age=0
+  printf '%s\n' "$age" > "$tmp_file" && mv -f "$tmp_file" "$age_file"
+}
+
+cleanup_stale_heartbeat_state() {
+  local heartbeat_dir="$1"
+  local state_file age_file
+
+  [[ -d "$heartbeat_dir" ]] || return 0
+
+  for state_file in "$heartbeat_dir"/*.state "$heartbeat_dir"/.*.state; do
+    [[ -e "$state_file" ]] || continue
+    rm -f "$state_file" "${state_file}.tmp."* 2>/dev/null || true
+  done
+  for age_file in "$heartbeat_dir"/*.state-age "$heartbeat_dir"/.*.state-age; do
+    [[ -e "$age_file" ]] || continue
+    rm -f "$age_file" "${age_file}.tmp."* 2>/dev/null || true
+  done
+}
+
+cleanup_orphan_stale_heartbeat_state() {
+  local heartbeat_dir="$1"
+  local state_file age_file heartbeat_file
+
+  [[ -d "$heartbeat_dir" ]] || return 0
+
+  for state_file in "$heartbeat_dir"/*.state "$heartbeat_dir"/.*.state; do
+    [[ -e "$state_file" ]] || continue
+    heartbeat_file="${state_file%.state}.json"
+    if [[ ! -f "$heartbeat_file" ]]; then
+      rm -f "$state_file" "${state_file}.tmp."* 2>/dev/null || true
+      age_file="${state_file%.state}.state-age"
+      rm -f "$age_file" "${age_file}.tmp."* 2>/dev/null || true
+    fi
+  done
+  for age_file in "$heartbeat_dir"/*.state-age "$heartbeat_dir"/.*.state-age; do
+    [[ -e "$age_file" ]] || continue
+    heartbeat_file="${age_file%.state-age}.json"
+    [[ -f "$heartbeat_file" ]] || rm -f "$age_file" "${age_file}.tmp."* 2>/dev/null || true
+  done
+}
+
+check_stale_heartbeats() {
+  local run_id="$1" log_base="$2" heartbeat_dir="$3"
+  local warn_seconds="${4:-}" error_seconds="${5:-}"
+  local resolved_thresholds
+  local now_epoch heartbeat_file state_file age_file row
+  local domain lens_id pid iteration age_seconds previous_state new_state recovery_age
+
+  [[ -d "$heartbeat_dir" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  if [[ ! "$warn_seconds" =~ ^[0-9]+$ || ! "$error_seconds" =~ ^[0-9]+$ ]]; then
+    resolved_thresholds="$(resolve_status_stale_thresholds)"
+    read -r warn_seconds error_seconds <<< "$resolved_thresholds"
+  else
+    warn_seconds=$((10#$warn_seconds))
+    error_seconds=$((10#$error_seconds))
+    if (( error_seconds <= warn_seconds )); then
+      resolved_thresholds="$(resolve_status_stale_thresholds)"
+      read -r warn_seconds error_seconds <<< "$resolved_thresholds"
+    fi
+  fi
+
+  now_epoch="$(date -u +%s)"
+
+  cleanup_orphan_stale_heartbeat_state "$heartbeat_dir"
+
+  for heartbeat_file in "$heartbeat_dir"/*.json; do
+    [[ -f "$heartbeat_file" ]] || continue
+
+    row="$(jq -r --argjson now_epoch "$now_epoch" '
+      def number_value($fallback):
+        if type == "number" then .
+        elif type == "string" then (tonumber? // $fallback)
+        else $fallback
+        end;
+      def age_from($now):
+        if type == "string" then
+          ($now - (try fromdateiso8601 catch $now) | floor) as $age
+          | if $age < 0 then 0 else $age end
+        else 0
+        end;
+      select((.domain | type) == "string" and (.lens_id | type) == "string")
+      | [
+          .domain,
+          .lens_id,
+          (((.pid // 0) | number_value(0)) | floor | tostring),
+          (((.iteration // 0) | number_value(0)) | floor | tostring),
+          (((.last_heartbeat_at // "") | age_from($now_epoch)) | tostring)
+        ]
+      | @tsv
+    ' "$heartbeat_file" 2>/dev/null || true)"
+    [[ -n "$row" ]] || continue
+
+    IFS=$'\t' read -r domain lens_id pid iteration age_seconds <<< "$row"
+    [[ "$pid" =~ ^[0-9]+$ ]] || pid=0
+    [[ "$iteration" =~ ^[0-9]+$ ]] || iteration=0
+    [[ "$age_seconds" =~ ^[0-9]+$ ]] || age_seconds=0
+    pid=$((10#$pid))
+    iteration=$((10#$iteration))
+    age_seconds=$((10#$age_seconds))
+
+    state_file="$(status_stale_state_path "$heartbeat_file")"
+    age_file="$(status_stale_age_path "$heartbeat_file")"
+    previous_state="$(status_read_stale_state "$state_file")"
+    new_state="$previous_state"
+
+    case "$previous_state" in
+      ok)
+        if (( age_seconds >= warn_seconds )); then
+          status_emit_transition_log "WARN" "$run_id" "$log_base" "[$domain/$lens_id] heartbeat stale — last update ${age_seconds}s ago (pid $pid, iter $iteration)"
+          new_state="warn"
+        fi
+        ;;
+      warn)
+        if (( age_seconds < warn_seconds )); then
+          recovery_age="$(status_read_stale_age "$age_file" "$age_seconds")"
+          status_emit_transition_log "INFO" "$run_id" "$log_base" "[$domain/$lens_id] heartbeat recovered after ${recovery_age}s of silence"
+          new_state="ok"
+        elif (( age_seconds >= error_seconds )); then
+          status_emit_transition_log "ERROR" "$run_id" "$log_base" "[$domain/$lens_id] heartbeat silent for ${age_seconds}s — worker likely hung (pid $pid, iter $iteration)"
+          new_state="error"
+        fi
+        ;;
+      error)
+        if (( age_seconds < warn_seconds )); then
+          recovery_age="$(status_read_stale_age "$age_file" "$age_seconds")"
+          status_emit_transition_log "INFO" "$run_id" "$log_base" "[$domain/$lens_id] heartbeat recovered after ${recovery_age}s of silence"
+          new_state="ok"
+        fi
+        ;;
+    esac
+
+    status_write_stale_state "$state_file" "$new_state" || true
+    if [[ "$new_state" == "warn" || "$new_state" == "error" ]]; then
+      status_write_stale_age "$age_file" "$age_seconds" || true
+    else
+      rm -f "$age_file" "${age_file}.tmp."* 2>/dev/null || true
+    fi
+  done
+}
+
 status_updater_loop() {
   local interval="$1"
   local parent_pid="$2"
+  local run_id log_base heartbeat_dir warn_seconds error_seconds resolved_thresholds
   shift 2
   local sleep_pid=""
+
+  run_id="${1:-}"
+  log_base="${2:-}"
+  heartbeat_dir="${3:-}"
+  resolved_thresholds="$(resolve_status_stale_thresholds)"
+  read -r warn_seconds error_seconds <<< "$resolved_thresholds"
 
   trap '[[ -n "$sleep_pid" ]] && kill "$sleep_pid" 2>/dev/null; exit 0' TERM INT
 
@@ -218,6 +504,7 @@ status_updater_loop() {
       exit 0
     fi
     write_status_snapshot "running" "$@" || true
+    check_stale_heartbeats "$run_id" "$log_base" "$heartbeat_dir" "$warn_seconds" "$error_seconds" || true
   done
 }
 
@@ -234,9 +521,11 @@ start_status_updater() {
 
   bash -c '
     source "$1"
-    shift
+    source "$2"
+    init_logging "$5" "$6"
+    shift 2
     status_updater_loop "$@"
-  ' "repolens-status-updater:$run_id" "$SCRIPT_DIR/lib/status.sh" \
+  ' "repolens-status-updater:$run_id" "$SCRIPT_DIR/lib/status.sh" "$SCRIPT_DIR/lib/logging.sh" \
     "$interval" "$$" "$run_id" "$log_base" "$heartbeat_dir" "$completed_file" "$summary_file" \
     "$project" "$repo" "$mode" "$agent" "$parallel" "$max_parallel" "$STATUS_LENSES_FILE" \
     >/dev/null 2>&1 &
@@ -260,6 +549,10 @@ stop_status_updater() {
       "$final_state" "${RUN_ID:-}" "${LOG_BASE:-}" "${HEARTBEAT_DIR:-}" "${completed_lenses_file:-}" \
       "${SUMMARY_FILE:-}" "${PROJECT_PATH:-}" "${FORGE_REPO_SLUG:-}" "${MODE:-}" "${AGENT:-}" \
       "${PARALLEL:-}" "${MAX_PARALLEL:-}" "${STATUS_LENSES_FILE:-}" || true
+  fi
+
+  if [[ -n "${HEARTBEAT_DIR:-}" ]]; then
+    cleanup_stale_heartbeat_state "${HEARTBEAT_DIR:-}" || true
   fi
 }
 

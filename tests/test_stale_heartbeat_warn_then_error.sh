@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Copyright 2025-2026 Bootstrap Academy
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$SCRIPT_DIR/tests/status_test_lib.sh"
+source "$SCRIPT_DIR/lib/logging.sh"
+source "$SCRIPT_DIR/lib/status.sh"
+trap status_cleanup EXIT
+
+echo "=== stale heartbeat warn then error transitions ==="
+status_require_jq
+
+RUN_ID="stale-warn-error"
+LOG_BASE="$STATUS_TEST_TMPDIR/$RUN_ID"
+HEARTBEAT_DIR="$LOG_BASE/.heartbeat"
+HEARTBEAT_FILE="$HEARTBEAT_DIR/security__xss.json"
+STATE_FILE="$HEARTBEAT_DIR/security__xss.state"
+LOG_FILE="$LOG_BASE/$RUN_ID.log"
+mkdir -p "$HEARTBEAT_DIR"
+init_logging "$RUN_ID" "$LOG_BASE"
+
+write_heartbeat() {
+  local age_seconds="$1" pid="$2" iteration="$3"
+  local now_epoch last_heartbeat_at
+  now_epoch="$(date -u +%s)"
+  last_heartbeat_at="$(date -u -d "@$((now_epoch - age_seconds))" +%Y-%m-%dT%H:%M:%SZ)"
+  jq -cn \
+    --arg run_id "$RUN_ID" \
+    --arg domain "security" \
+    --arg lens_id "xss" \
+    --arg started_at "$last_heartbeat_at" \
+    --arg last_heartbeat_at "$last_heartbeat_at" \
+    --argjson pid "$pid" \
+    --argjson iteration "$iteration" \
+    '{
+      run_id: $run_id,
+      domain: $domain,
+      lens_id: $lens_id,
+      pid: $pid,
+      iteration: $iteration,
+      started_at: $started_at,
+      last_heartbeat_at: $last_heartbeat_at,
+      state: "running"
+    }' > "$HEARTBEAT_FILE"
+}
+
+log_count() {
+  local pattern="$1"
+  grep -Ec "$pattern" "$LOG_FILE" 2>/dev/null || true
+}
+
+write_heartbeat 130 4242 3
+check_stale_heartbeats "$RUN_ID" "$LOG_BASE" "$HEARTBEAT_DIR" 120 600
+assert_eq "Warn transition logs exactly once" "1" "$(log_count '\[WARN\].*\[security/xss\] heartbeat stale')"
+assert_contains "Warn names pid and iteration" "(pid 4242, iter 3)" "$(cat "$LOG_FILE")"
+assert_eq "Warn transition writes warn state" "warn" "$(cat "$STATE_FILE")"
+
+check_stale_heartbeats "$RUN_ID" "$LOG_BASE" "$HEARTBEAT_DIR" 120 600
+assert_eq "Repeated stale warn tick is silent" "1" "$(log_count '\[WARN\].*\[security/xss\] heartbeat stale')"
+
+write_heartbeat 650 4242 3
+check_stale_heartbeats "$RUN_ID" "$LOG_BASE" "$HEARTBEAT_DIR" 120 600
+assert_eq "Error transition logs exactly once" "1" "$(log_count '\[ERROR\].*\[security/xss\] heartbeat silent')"
+assert_contains "Error names likely hung worker" "worker likely hung (pid 4242, iter 3)" "$(cat "$LOG_FILE")"
+assert_eq "Error transition writes error state" "error" "$(cat "$STATE_FILE")"
+
+check_stale_heartbeats "$RUN_ID" "$LOG_BASE" "$HEARTBEAT_DIR" 120 600
+assert_eq "Repeated error tick is silent" "1" "$(log_count '\[ERROR\].*\[security/xss\] heartbeat silent')"
+
+status_finish
