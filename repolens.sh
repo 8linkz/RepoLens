@@ -40,6 +40,8 @@ source "$SCRIPT_DIR/lib/template.sh"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/summary.sh"
 # shellcheck source=/dev/null
+source "$SCRIPT_DIR/lib/status.sh"
+# shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/parallel.sh"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/hosted.sh"
@@ -451,12 +453,28 @@ _cleanup_clone() {
   fi
 }
 _cleanup_all() {
+  stop_status_updater "${REPOLENS_FINAL_STATE:-finished}" 2>/dev/null || true
   if $HOSTED 2>/dev/null; then
     cleanup_hosted "${RUN_ID:-}" 2>/dev/null
   fi
   _cleanup_clone
 }
 trap _cleanup_all EXIT
+
+_handle_interrupt() {
+  REPOLENS_FINAL_STATE="interrupted"
+  REPOLENS_INTERRUPT_EXIT_CODE=130
+  exit 130
+}
+
+_handle_termination() {
+  REPOLENS_FINAL_STATE="interrupted"
+  REPOLENS_INTERRUPT_EXIT_CODE=143
+  exit 143
+}
+
+trap _handle_interrupt INT
+trap _handle_termination TERM
 
 if [[ "$PROJECT_PATH" =~ ^(https://|git@|ssh://|git://) ]]; then
   CLONE_DIR="$(mktemp -d)"
@@ -1369,6 +1387,8 @@ if $HOSTED && $PARALLEL; then
   PARALLEL=false
 fi
 
+start_status_updater "$RUN_ID" "$LOG_BASE" "$HEARTBEAT_DIR" "$completed_lenses_file" "$SUMMARY_FILE" "$PROJECT_PATH" "$FORGE_REPO_SLUG" "$MODE" "$AGENT" "$PARALLEL" "$MAX_PARALLEL"
+
 # --- Run a single lens ---
 run_lens() {
   local lens_entry="$1"
@@ -1751,4 +1771,8 @@ jq '.' "$SUMMARY_FILE"
 # per-lens statuses, so --resume picks up seamlessly.
 if [[ -f "$LOG_BASE/.rate-limit-abort" ]]; then
   exit 1
+fi
+
+if [[ "${REPOLENS_FINAL_STATE:-finished}" == "interrupted" ]]; then
+  exit "${REPOLENS_INTERRUPT_EXIT_CODE:-130}"
 fi

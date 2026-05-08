@@ -48,7 +48,8 @@ init_parallel() {
   _REPOLENS_CHILD_STARTED_AT=()
   mkdir -p "$_REPOLENS_SEM_DIR"
   _sem_gc_stale
-  trap '_cleanup_children' INT TERM
+  trap 'REPOLENS_FINAL_STATE="interrupted"; REPOLENS_INTERRUPT_EXIT_CODE=130; _cleanup_children' INT
+  trap 'REPOLENS_FINAL_STATE="interrupted"; REPOLENS_INTERRUPT_EXIT_CODE=143; _cleanup_children' TERM
 }
 
 # _sem_read_token <token_file> <pid_var> <owner_var>
@@ -435,9 +436,9 @@ wait_all() {
           fi
           rc=1
           wait "$pid" 2>/dev/null || true
-          _REPOLENS_CHILD_PIDS[$i]=""
-          _REPOLENS_CHILD_LENS_IDS[$i]=""
-          _REPOLENS_CHILD_STARTED_AT[$i]=""
+          _REPOLENS_CHILD_PIDS[i]=""
+          _REPOLENS_CHILD_LENS_IDS[i]=""
+          _REPOLENS_CHILD_STARTED_AT[i]=""
         else
           remaining=$((remaining + 1))
         fi
@@ -448,9 +449,9 @@ wait_all() {
         if ! wait "$pid" 2>/dev/null; then
           rc=1
         fi
-        _REPOLENS_CHILD_PIDS[$i]=""
-        _REPOLENS_CHILD_LENS_IDS[$i]=""
-        _REPOLENS_CHILD_STARTED_AT[$i]=""
+        _REPOLENS_CHILD_PIDS[i]=""
+        _REPOLENS_CHILD_LENS_IDS[i]=""
+        _REPOLENS_CHILD_STARTED_AT[i]=""
       fi
     done
 
