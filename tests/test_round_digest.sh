@@ -374,6 +374,31 @@ fi
 assert_le "digest stays within the 500-line hard cap" "$digest_lines" 500
 
 echo ""
+echo "Test 1b: nested LOCAL_MODE lens output directories are included in digest"
+LOG_WARN_MESSAGES=()
+round_dir="$(make_round_dir "nested-lens-outputs")"
+mkdir -p "$round_dir/lens-outputs/security/injection" \
+         "$round_dir/lens-outputs/testing/unit-test-gaps"
+
+write_finding "$round_dir/lens-outputs/security/injection/001-injection.md" HIGH security injection input-validation "app/controllers/login.rb"
+write_finding "$round_dir/lens-outputs/testing/unit-test-gaps/001-unit-test-gaps.md" LOW testing unit-test-gaps test-coverage "tests/api_test.rb"
+
+run_build_round_digest "$round_dir"
+rc=$?
+assert_eq "nested LOCAL_MODE outputs exit successfully" "0" "$rc"
+
+digest="$round_dir/digest.md"
+assert_file_exists "nested output round writes digest.md" "$digest"
+digest_content="$(read_if_exists "$digest")"
+
+assert_contains "digest includes nested security lens output" "injection: 1 finding" "$digest_content"
+assert_contains "digest includes nested testing lens output" "unit-test-gaps: 1 finding" "$digest_content"
+assert_contains "nested digest records input-validation theme" "input-validation" "$digest_content"
+assert_contains "nested digest records test-coverage theme" "test-coverage" "$digest_content"
+warnings="$(join_by " " "${LOG_WARN_MESSAGES[@]:-}")"
+assert_eq "nested registered outputs emit no warnings" "" "$warnings"
+
+echo ""
 echo "Test 2: duplicate lenses and category lists aggregate into stable counts"
 LOG_WARN_MESSAGES=()
 round_dir="$(make_round_dir "aggregate-counts")"

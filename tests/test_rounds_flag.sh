@@ -44,6 +44,7 @@ TOTAL=0
 FAKE_BIN="$TMPDIR/bin"
 LAST_OUTPUT_FILE=""
 LAST_RC=0
+LAST_RUN_ID=""
 
 pass_with() {
   local desc="$1"
@@ -90,6 +91,56 @@ assert_not_contains() {
   fi
 }
 
+assert_dir_exists() {
+  local desc="$1" dir="$2"
+  TOTAL=$((TOTAL + 1))
+  if [[ -d "$dir" ]]; then
+    pass_with "$desc"
+  else
+    fail_with "$desc" "Expected directory at $dir"
+  fi
+}
+
+assert_dir_missing() {
+  local desc="$1" dir="$2"
+  TOTAL=$((TOTAL + 1))
+  if [[ ! -e "$dir" ]]; then
+    pass_with "$desc"
+  else
+    fail_with "$desc" "Did not expect path at $dir"
+  fi
+}
+
+assert_file_exists() {
+  local desc="$1" file="$2"
+  TOTAL=$((TOTAL + 1))
+  if [[ -f "$file" ]]; then
+    pass_with "$desc"
+  else
+    fail_with "$desc" "Expected file at $file"
+  fi
+}
+
+assert_file_missing() {
+  local desc="$1" file="$2"
+  TOTAL=$((TOTAL + 1))
+  if [[ ! -e "$file" ]]; then
+    pass_with "$desc"
+  else
+    fail_with "$desc" "Did not expect file at $file"
+  fi
+}
+
+assert_json_query() {
+  local desc="$1" file="$2" query="$3"
+  TOTAL=$((TOTAL + 1))
+  if jq -e "$query" "$file" >/dev/null 2>&1; then
+    pass_with "$desc"
+  else
+    fail_with "$desc" "jq query failed: $query"
+  fi
+}
+
 make_fake_codex() {
   mkdir -p "$FAKE_BIN"
   cat > "$FAKE_BIN/codex" <<'EOF'
@@ -114,6 +165,7 @@ last_output() {
 register_created_run_id() {
   local run_id
   run_id="$(grep -oE 'RepoLens run [^ ]+ starting' "$LAST_OUTPUT_FILE" 2>/dev/null | head -1 | awk '{print $3}')"
+  LAST_RUN_ID="$run_id"
   if [[ -n "$run_id" ]]; then
     CREATED_RUN_IDS+=("$run_id")
   fi
@@ -146,11 +198,36 @@ run_repolens_case() {
   register_created_run_id
 }
 
+run_repolens_default_output_case() {
+  local name="$1"
+  shift
+
+  local project="$TMPDIR/project-$name"
+  make_project "$project"
+
+  LAST_OUTPUT_FILE="$TMPDIR/output-$name.txt"
+
+  env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED PATH="$FAKE_BIN:$PATH" \
+    bash "$SCRIPT_DIR/repolens.sh" \
+      --project "$project" \
+      --agent codex \
+      --local \
+      --yes \
+      --dry-run \
+      "$@" >"$LAST_OUTPUT_FILE" 2>&1
+  LAST_RC=$?
+  register_created_run_id
+}
+
 assert_rounds_table_entry() {
   local mode="$1"
   local expected="$2"
   local actual="${ROUNDS_CAP_BY_MODE[$mode]:-__missing__}"
   assert_eq "ROUNDS_CAP_BY_MODE[$mode] is $expected" "$expected" "$actual"
+}
+
+last_run_dir() {
+  printf '%s/logs/%s\n' "$SCRIPT_DIR" "$LAST_RUN_ID"
 }
 
 echo ""
@@ -203,6 +280,30 @@ echo "Test 4: --rounds controls the dry-run round count"
 run_repolens_case "flag-rounds" "__unset__" --rounds 3
 assert_eq "--rounds 3 dry-run exits successfully" "0" "$LAST_RC"
 assert_contains "--rounds 3 is displayed" "Rounds:      3" "$(last_output)"
+run_dir="$(last_run_dir)"
+assert_dir_exists "dry-run creates run-level rounds directory" "$run_dir/rounds"
+assert_dir_exists "dry-run creates final directory" "$run_dir/final"
+assert_dir_exists "dry-run creates final/filed directory" "$run_dir/final/filed"
+for round in 1 2 3; do
+  assert_dir_exists "dry-run creates round-$round directory" "$run_dir/rounds/round-$round"
+  assert_dir_exists "dry-run creates round-$round lens-outputs directory" "$run_dir/rounds/round-$round/lens-outputs"
+  assert_file_exists "dry-run creates round-$round metadata" "$run_dir/rounds/round-$round/metadata.json"
+  assert_file_missing "dry-run does not mark round-$round completed" "$run_dir/rounds/round-$round/.completed"
+done
+assert_dir_missing "dry-run does not create round-4 for --rounds 3" "$run_dir/rounds/round-4"
+assert_json_query "round-2 metadata records total rounds and lens ids" \
+                  "$run_dir/rounds/round-2/metadata.json" \
+                  '.round_number == 2 and .rounds_total == 3 and (.lens_ids | length) == .lens_count'
+
+echo ""
+echo "Test 4b: local dry-run defaults markdown output to round-1 lens-outputs"
+run_repolens_default_output_case "default-output-root" --domain i18n
+assert_eq "default output dry-run exits successfully" "0" "$LAST_RC"
+run_dir="$(last_run_dir)"
+assert_contains "default output is the round lens output root" \
+                "$run_dir/rounds/round-1/lens-outputs" \
+                "$(last_output)"
+assert_dir_exists "default output root exists under round-1" "$run_dir/rounds/round-1/lens-outputs"
 
 echo ""
 echo "Test 5: REPOLENS_ROUNDS is used when --rounds is absent"

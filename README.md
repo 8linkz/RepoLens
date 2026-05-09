@@ -291,9 +291,9 @@ Usage: repolens.sh --project <path|url> --agent <agent> [OPTIONS]
 | `--spec <file>`        | Spec/PRD/roadmap to guide analysis (any text file, max 100 KB)                                                                                                                                                                                                                                           |
 | `--max-issues <n>`     | Stop after creating _n_ total issues                                                                                                                                                                                                                                                                     |
 | `--depth <n>`          | DONE streak depth per lens. Defaults to `3` for `audit`, `feature`, and `bugfix`; defaults to `1` for all other modes. Must be between `1` and `19`                                                                                        |
-| `--rounds <n>`         | Validated cross-lens round count for upcoming multi-round orchestration. Defaults to `1`; `audit`, `feature`, `bugfix`, and `custom` accept `1`-`10`, while `deploy`, `opensource`, `content`, and `discover` are locked to `1`. The resolved value is shown by `--dry-run` |
+| `--rounds <n>`         | Validated cross-lens round count for upcoming multi-round orchestration. Defaults to `1`; `audit`, `feature`, `bugfix`, and `custom` accept `1`-`10`, while `deploy`, `opensource`, `content`, and `discover` are locked to `1`. The resolved value is shown by `--dry-run` and sizes the `logs/<run-id>/rounds/round-N/` artifact layout |
 | `--local`              | Write findings as local markdown files instead of creating remote issues. No forge CLI required                                                                                                                                                                                                          |
-| `--output <path>`      | Output directory for local markdown files (requires `--local`, default: `logs/<run-id>/issues/`)                                                                                                                                                                                                         |
+| `--output <path>`      | Output directory for local markdown files (requires `--local`, default: `logs/<run-id>/rounds/round-1/lens-outputs/`)                                                                                                                                                                                   |
 | `--forge <provider>`   | Override forge auto-detection: `gh` for GitHub, `tea` for Gitea, `fj` for Forgejo/Codeberg. Codeberg is auto-detected; use this for self-hosted Gitea/Forgejo remotes whose hostname is not auto-detected. Self-hosted Forgejo needs an HTTPS or SSH `origin` remote so RepoLens can pass `fj -H <host>` |
 | `--hosted`             | Spin up Docker Compose for DAST scanning (used with `toolgate` domain)                                                                                                                                                                                                                                   |
 | `--max-cost <amount>`  | Warn if the **minimum cost estimate** exceeds this dollar amount (e.g., `--max-cost 10`). The estimate is a lower bound — real runs typically cost 2–5× more due to tool-call churn and iteration non-convergence. Budget accordingly.                                                                   |
@@ -469,7 +469,7 @@ The `state` value is `running` during execution, then `finished` after a non-int
 ## How It Works
 
 1. Validates target repo, server, or APK target, agent CLI, and forge CLI auth (skipped with `--local`)
-2. Resolves lens list (all, `--domain`, `--focus`, or `--lens`)
+2. Resolves lens list (all, `--domain`, `--focus`, or `--lens`) and creates the run artifact layout under `logs/<run-id>/`
 3. If `--dry-run`: prints mode, agent, project path, resolved round count, and the full lens list, then exits — no agents run and no prompts are shown
 4. For `--agent claude`: prompts for acknowledgment that `--dangerously-skip-permissions` only skips interactive permission prompts, not safety filters. `--yes` bypasses this prompt
 5. For `deploy` mode: prompts for explicit authorization confirmation (`I confirm I am authorized to audit this server [y/N]`). Displays legal references (§202a StGB, CFAA, EU Directive 2013/40/EU). `--yes` bypasses this prompt
@@ -519,7 +519,9 @@ Completed lenses are skipped. The run ID is printed at startup and found in `log
 ## Output
 
 - **Remote Issues** — Created directly in the target repo with severity-prefixed titles and domain labels (default)
-- **Local Markdown** — With `--local`, findings are written as individual markdown files to `<output-dir>/<domain>/<lens-id>/NNN-slug.md` with YAML frontmatter (title, severity, domain, lens, labels). Default output directory: `logs/<run-id>/issues/`
+- **Local Markdown** — With `--local`, findings are written as individual markdown files to `<output-dir>/<domain>/<lens-id>/NNN-slug.md` with YAML frontmatter (title, severity, domain, lens, labels). Default output directory: `logs/<run-id>/rounds/round-1/lens-outputs/`
+- **Round Artifacts** — Every run creates `logs/<run-id>/rounds/round-N/` for each resolved round, including `metadata.json` and `lens-outputs/`. `round-N/.completed` appears only after that round finishes cleanly. Future round orchestration writes `digest.md` there
+- **Final Artifacts** — Every run creates `logs/<run-id>/final/` and `logs/<run-id>/final/filed/`; future synthesis writes the final manifest, reasoning, and filed issue links there
 - **Logs** — `logs/<run-id>/<domain>/<lens>/iteration-N-TIMESTAMP.txt`
 - **Heartbeats** — Active lenses write `logs/<run-id>/.heartbeat/<domain>__<lens-id>.json`; files are removed after clean lens completion and left behind if a worker exits abnormally
 - **Status** — `logs/<run-id>/status.json`, refreshed during the run with queued, active, completed, issue-count, completion-percentage, and final-state data; render it with `./repolens.sh status [run-id]`

@@ -34,7 +34,66 @@ _rounds_valid_array_name() {
   [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]
 }
 
-_rounds_marker_path() {
+_rounds_nonnegative_integer() {
+  local value="$1"
+  [[ "$value" =~ ^[0-9]+$ ]]
+}
+
+_rounds_positive_integer() {
+  local value="$1"
+  [[ "$value" =~ ^[1-9][0-9]*$ ]]
+}
+
+round_dir() {
+  local round_number="${2:-}" base="${LOG_BASE:-}"
+
+  if [[ -z "$base" || -z "$round_number" ]]; then
+    return 2
+  fi
+
+  printf '%s/rounds/round-%s' "$base" "$round_number"
+}
+
+round_lens_outputs_dir() {
+  local run_id="${1:-}" round_number="${2:-}" dir
+  dir="$(round_dir "$run_id" "$round_number")" || return $?
+  printf '%s/lens-outputs' "$dir"
+}
+
+round_digest_path() {
+  local run_id="${1:-}" round_number="${2:-}" dir
+  dir="$(round_dir "$run_id" "$round_number")" || return $?
+  printf '%s/digest.md' "$dir"
+}
+
+round_metadata_path() {
+  local run_id="${1:-}" round_number="${2:-}" dir
+  dir="$(round_dir "$run_id" "$round_number")" || return $?
+  printf '%s/metadata.json' "$dir"
+}
+
+round_completed_marker() {
+  local run_id="${1:-}" round_number="${2:-}" dir
+  dir="$(round_dir "$run_id" "$round_number")" || return $?
+  printf '%s/.completed' "$dir"
+}
+
+final_dir() {
+  local base="${LOG_BASE:-}"
+  if [[ -z "$base" ]]; then
+    return 2
+  fi
+
+  printf '%s/final' "$base"
+}
+
+final_filed_dir() {
+  local run_id="${1:-}" dir
+  dir="$(final_dir "$run_id")" || return $?
+  printf '%s/filed' "$dir"
+}
+
+_rounds_legacy_marker_path() {
   local round="$1"
   printf '%s/.rounds/round-%s.completed\n' "$LOG_BASE" "$round"
 }
@@ -54,20 +113,195 @@ _rounds_restore_completed_lenses_file() {
   fi
 }
 
+write_round_metadata() {
+  local run_id="$1" round_number="$2" breadth="$3" rounds_total="$4"
+  shift 4
+  local metadata_path metadata_dir tmp_metadata start_ts lens_count lens_ids_json
+  local -a lens_ids=("$@")
+
+  if ! _rounds_positive_integer "$round_number" \
+      || ! _rounds_nonnegative_integer "$breadth" \
+      || ! _rounds_positive_integer "$rounds_total"; then
+    return 2
+  fi
+
+  metadata_path="$(round_metadata_path "$run_id" "$round_number")" || return $?
+  metadata_dir="${metadata_path%/*}"
+  mkdir -p "$metadata_dir" || return 1
+
+  start_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  lens_count="${#lens_ids[@]}"
+  if (( lens_count > 0 )); then
+    lens_ids_json="$(printf '%s\n' "${lens_ids[@]}" | jq -R . | jq -s .)" || return 1
+  else
+    lens_ids_json='[]'
+  fi
+
+  tmp_metadata="${metadata_path}.tmp.$$"
+  if ! jq -n \
+      --arg start_ts "$start_ts" \
+      --argjson round_number "$round_number" \
+      --argjson breadth "$breadth" \
+      --argjson rounds_total "$rounds_total" \
+      --argjson lens_count "$lens_count" \
+      --argjson lens_ids "$lens_ids_json" \
+      '{
+        round_number: $round_number,
+        breadth: $breadth,
+        rounds_total: $rounds_total,
+        start_ts: $start_ts,
+        lens_count: $lens_count,
+        lens_ids: $lens_ids
+      }' > "$tmp_metadata"; then
+    rm -f "$tmp_metadata"
+    return 1
+  fi
+
+  mv "$tmp_metadata" "$metadata_path"
+}
+
+init_round_layout() {
+  local run_id="$1" round_number="$2" breadth="$3" rounds_total="$4"
+  shift 4
+  local round_path lens_outputs_path metadata_path
+  local -a lens_ids=("$@")
+
+  round_path="$(round_dir "$run_id" "$round_number")" || return $?
+  lens_outputs_path="$(round_lens_outputs_dir "$run_id" "$round_number")" || return $?
+  metadata_path="$(round_metadata_path "$run_id" "$round_number")" || return $?
+
+  mkdir -p "$round_path" "$lens_outputs_path" || return 1
+  if [[ ! -f "$metadata_path" ]]; then
+    write_round_metadata "$run_id" "$round_number" "$breadth" "$rounds_total" "${lens_ids[@]}" || return $?
+  fi
+}
+
+init_run_layout() {
+  local run_id="$1" rounds_total="$2"
+  shift 2
+  local breadth round final_path filed_path
+  local -a lens_ids=()
+
+  if ! _rounds_positive_integer "$rounds_total"; then
+    return 2
+  fi
+
+  if (( $# > 0 )) && _rounds_nonnegative_integer "$1"; then
+    breadth="$1"
+    shift
+    lens_ids=("$@")
+  else
+    lens_ids=("$@")
+    breadth="${#lens_ids[@]}"
+  fi
+
+  final_path="$(final_dir "$run_id")" || return $?
+  filed_path="$(final_filed_dir "$run_id")" || return $?
+  mkdir -p "$final_path" "$filed_path" || return 1
+
+  for (( round = 1; round <= rounds_total; round++ )); do
+    init_round_layout "$run_id" "$round" "$breadth" "$rounds_total" "${lens_ids[@]}" || return $?
+  done
+}
+
+_rounds_best_effort_sync() {
+  local path="$1"
+
+  if command -v sync >/dev/null 2>&1; then
+    sync -d "$path" >/dev/null 2>&1 || sync "$path" >/dev/null 2>&1 || true
+  fi
+}
+
+finalize_round() {
+  local run_id round_number
+  if (( $# == 1 )); then
+    run_id="${RUN_ID:-}"
+    round_number="$1"
+  else
+    run_id="$1"
+    round_number="$2"
+  fi
+
+  local metadata_path marker marker_dir tmp_metadata tmp_marker end_ts
+
+  if ! _rounds_positive_integer "$round_number"; then
+    return 2
+  fi
+
+  metadata_path="$(round_metadata_path "$run_id" "$round_number")" || return $?
+  marker="$(round_completed_marker "$run_id" "$round_number")" || return $?
+  marker_dir="${marker%/*}"
+  mkdir -p "$marker_dir" || return 1
+
+  end_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  tmp_metadata="${metadata_path}.tmp.$$"
+  if [[ -f "$metadata_path" ]]; then
+    if ! jq --arg end_ts "$end_ts" '. + {end_ts: $end_ts}' "$metadata_path" > "$tmp_metadata"; then
+      rm -f "$tmp_metadata"
+      return 1
+    fi
+  else
+    if ! jq -n \
+        --arg end_ts "$end_ts" \
+        --argjson round_number "$round_number" \
+        '{
+          round_number: $round_number,
+          breadth: 0,
+          rounds_total: $round_number,
+          start_ts: $end_ts,
+          end_ts: $end_ts,
+          lens_count: 0,
+          lens_ids: []
+        }' > "$tmp_metadata"; then
+      rm -f "$tmp_metadata"
+      return 1
+    fi
+  fi
+  mv "$tmp_metadata" "$metadata_path" || return 1
+
+  tmp_marker="${marker}.tmp.$$"
+  if ! printf '%s\n' "$end_ts" > "$tmp_marker"; then
+    rm -f "$tmp_marker"
+    return 1
+  fi
+  mv "$tmp_marker" "$marker" || return 1
+  _rounds_best_effort_sync "$marker"
+  _rounds_best_effort_sync "$marker_dir"
+}
+
 is_round_completed() {
-  local round="$1"
-  local marker
-  marker="$(_rounds_marker_path "$round")"
-  [[ -f "$marker" ]]
+  local run_id round marker legacy_marker
+  if (( $# >= 2 )); then
+    run_id="$1"
+    round="$2"
+    marker="$(round_completed_marker "$run_id" "$round")" || return $?
+    [[ -f "$marker" ]]
+    return
+  fi
+
+  round="$1"
+  marker="$(round_completed_marker "${RUN_ID:-}" "$round")" || return $?
+  legacy_marker="$(_rounds_legacy_marker_path "$round")"
+  [[ -f "$marker" || -f "$legacy_marker" ]]
 }
 
 mark_round_completed() {
-  local round="$1"
-  local marker marker_dir
-  marker="$(_rounds_marker_path "$round")"
-  marker_dir="${marker%/*}"
-  mkdir -p "$marker_dir"
-  : > "$marker"
+  local run_id round legacy_marker legacy_marker_dir
+  if (( $# >= 2 )); then
+    finalize_round "$1" "$2"
+    return $?
+  fi
+
+  run_id="${RUN_ID:-}"
+  round="$1"
+  finalize_round "$run_id" "$round" || return $?
+
+  legacy_marker="$(_rounds_legacy_marker_path "$round")"
+  legacy_marker_dir="${legacy_marker%/*}"
+  mkdir -p "$legacy_marker_dir" || return 1
+  : > "$legacy_marker" || return 1
+  _rounds_best_effort_sync "$legacy_marker"
+  _rounds_best_effort_sync "$legacy_marker_dir"
 }
 
 run_meta_orchestrator() {
@@ -285,7 +519,7 @@ _round_digest_join_lines() {
 
 build_round_digest() {
   local round_dir="${1:-}" lens_outputs_dir digest_path repo_root domains_file
-  local old_nullglob file frontmatter severity domain lens category normalized category_seen
+  local file frontmatter severity domain lens category normalized category_seen
   local suspect_file audit_domain audit_total coverage_count coverage_domains registered_lens display_lens
   local tmp_digest digest_lines
   local -a md_files=() sorted_lenses=() touched_domains=()
@@ -326,13 +560,7 @@ build_round_digest() {
   fi
 
   if [[ -d "$lens_outputs_dir" ]]; then
-    old_nullglob="$(shopt -p nullglob || true)"
-    shopt -s nullglob
-    md_files=("$lens_outputs_dir"/*.md)
-    eval "$old_nullglob"
-    if (( ${#md_files[@]} > 0 )); then
-      mapfile -t md_files < <(printf '%s\n' "${md_files[@]}" | LC_ALL=C sort)
-    fi
+    mapfile -t md_files < <(find "$lens_outputs_dir" -type f -name '*.md' -print | LC_ALL=C sort)
   fi
 
   for file in "${md_files[@]}"; do

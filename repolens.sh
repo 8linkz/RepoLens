@@ -44,6 +44,8 @@ source "$SCRIPT_DIR/lib/status.sh"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/parallel.sh"
 # shellcheck source=/dev/null
+source "$SCRIPT_DIR/lib/rounds.sh"
+# shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/hosted.sh"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/android.sh"
@@ -812,7 +814,9 @@ resolve_base_wrapper() {
 # --- Resolve local mode output directory ---
 if $LOCAL_MODE; then
   if [[ -z "$OUTPUT_DIR" ]]; then
-    OUTPUT_DIR="$LOG_BASE/issues"
+    if ! OUTPUT_DIR="$(round_lens_outputs_dir "$RUN_ID" 1)"; then
+      die "Unable to resolve round lens output directory"
+    fi
   fi
   mkdir -p "$OUTPUT_DIR"
   OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
@@ -941,6 +945,8 @@ for lens_entry in "${LENS_LIST[@]}"; do
   lens_file="$LENSES_DIR/$domain/$lens_id.md"
   [[ -f "$lens_file" ]] || die "Missing lens prompt: $lens_file"
 done
+
+init_run_layout "$RUN_ID" "$ROUNDS" "$TOTAL_LENSES" "${LENS_LIST[@]}" || die "Unable to initialize round layout"
 
 # --- Check resume state ---
 completed_lenses_file="$LOG_BASE/.completed"
@@ -1860,6 +1866,11 @@ else
 fi
 
 # --- Finalize ---
+round_stop_reason="$(jq -r '.stopped_reason // empty' "$SUMMARY_FILE" 2>/dev/null || true)"
+if [[ -z "$round_stop_reason" && ! -f "$LOG_BASE/.rate-limit-abort" ]]; then
+  finalize_round "$RUN_ID" 1 || die "Unable to finalize round 1"
+fi
+
 finalize_summary "$SUMMARY_FILE"
 
 log_info "=============================="

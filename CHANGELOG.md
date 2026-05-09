@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Added
 
 - `--rounds <n>` now accepts a validated cross-lens round count, honors `REPOLENS_ROUNDS` as a fallback with CLI precedence, applies per-mode caps (`audit`, `feature`, `bugfix`, and `custom` up to `10`; `deploy`, `opensource`, `content`, and `discover` locked to `1`), and shows the resolved value in `--dry-run` ([#140](https://github.com/TheMorpheus407/RepoLens/issues/140))
+- Runs now create an inspectable round artifact layout under `logs/<run-id>/rounds/round-N/` with round metadata, per-round lens outputs, completion barriers, and a top-level `final/` directory reserved for synthesis output ([#147](https://github.com/TheMorpheus407/RepoLens/issues/147))
 - `logs/lifecycle-violations` lens for detecting out-of-order lifecycle pairs, duplicate starts, duplicate terminals, swapped timestamps, and cross-worker lifecycle reordering in runtime logs supplied through `--logs` ([#141](https://github.com/TheMorpheus407/RepoLens/issues/141))
 - `logs/state-machine-violations` lens for detecting illegal, skipped, regressed, incompatible, or cross-component lifecycle states in runtime logs supplied through `--logs` ([#139](https://github.com/TheMorpheus407/RepoLens/issues/139))
 - `repolens.sh status [run-id]` now renders the newest or named `logs/<run-id>/status.json` snapshot with human-readable progress, raw `--json`, `--watch`, `--stale-after`, `--no-color`, stale worker exit code `2`, and no normal `--project` / `--agent` requirement ([#122](https://github.com/TheMorpheus407/RepoLens/issues/122))
@@ -44,7 +45,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Gitea `tea` backend for remote forge operations: RepoLens can authenticate with `tea login list`, create labels with `tea labels create --name ...`, and count matching open issues with `tea issues list --limit 1000 --output json` when `--forge tea` is selected or a Gitea origin is detected
 - Forgejo/Codeberg `fj` backend for remote forge operations: RepoLens can authenticate with `fj -H <host> whoami`, create labels with `fj -H <host> repo labels ...`, and count matching open issues with `fj -H <host> issue search` when Codeberg is detected or `--forge fj` is selected for a Forgejo origin
 - `--local` flag: write findings as local markdown files instead of creating remote issues — no forge CLI required
-- `--output <path>` flag: custom output directory for local markdown files (requires `--local`, defaults to `logs/<run-id>/issues/`)
+- `--output <path>` flag: custom output directory for local markdown files (requires `--local`; omitted output now defaults to `logs/<run-id>/rounds/round-1/lens-outputs/`)
 
 ### Documentation
 
