@@ -365,6 +365,75 @@ spawn_lens() {
   _REPOLENS_CHILD_STARTED_AT+=("$(date +%s)")
 }
 
+# wait_batch_complete <barrier_dir> [timeout_seconds]
+#   Blocks until <barrier_dir>/.completed exists. Returns 0 on success,
+#   1 on timeout. BATCH_WAIT_TIMEOUT defaults to 7200s; BATCH_POLL_INTERVAL
+#   defaults to 5s.
+wait_batch_complete() {
+  local barrier_dir="${1:-}"
+  local timeout_seconds="${2:-${BATCH_WAIT_TIMEOUT:-7200}}"
+  local poll_interval="${BATCH_POLL_INTERVAL:-5}"
+  local timeout_source="BATCH_WAIT_TIMEOUT"
+  local raw_timeout raw_poll_interval barrier_file start now elapsed sleep_seconds remaining
+
+  if [[ -z "$barrier_dir" ]]; then
+    log_warn "wait_batch_complete requires a non-empty barrier_dir."
+    return 1
+  fi
+
+  if (( $# >= 2 )); then
+    timeout_source="timeout_seconds"
+  fi
+
+  raw_timeout="$timeout_seconds"
+  if [[ ! "$timeout_seconds" =~ ^[0-9]+$ ]]; then
+    log_warn "Invalid ${timeout_source}='$raw_timeout'; using default 7200s."
+    timeout_seconds=7200
+  else
+    timeout_seconds=$((10#$timeout_seconds))
+  fi
+
+  raw_poll_interval="$poll_interval"
+  if [[ ! "$poll_interval" =~ ^[0-9]+$ ]]; then
+    log_warn "Invalid BATCH_POLL_INTERVAL='$raw_poll_interval'; using default 5s."
+    poll_interval=5
+  else
+    poll_interval=$((10#$poll_interval))
+    if (( poll_interval <= 0 )); then
+      log_warn "Invalid BATCH_POLL_INTERVAL='$raw_poll_interval'; using default 5s."
+      poll_interval=5
+    fi
+  fi
+
+  barrier_file="$barrier_dir/.completed"
+  start="$(date +%s)"
+  log_info "Waiting for batch barrier: dir=$barrier_dir elapsed=0s timeout=${timeout_seconds}s poll=${poll_interval}s"
+
+  while true; do
+    now="$(date +%s)"
+    elapsed=$((now - start))
+    (( elapsed < 0 )) && elapsed=0
+
+    if [[ -e "$barrier_file" ]]; then
+      log_info "Batch barrier completed: dir=$barrier_dir elapsed=${elapsed}s"
+      return 0
+    fi
+
+    if (( elapsed >= timeout_seconds )); then
+      log_warn "Batch barrier timeout: dir=$barrier_dir elapsed=${elapsed}s timeout=${timeout_seconds}s"
+      return 1
+    fi
+
+    sleep_seconds="$poll_interval"
+    remaining=$((timeout_seconds - elapsed))
+    if (( remaining < sleep_seconds )); then
+      sleep_seconds="$remaining"
+    fi
+    (( sleep_seconds > 0 )) || sleep_seconds=1
+    sleep "$sleep_seconds"
+  done
+}
+
 # wait_all
 #   Wait for all tracked children with a per-child deadline. Returns 0 if
 #   all succeeded, 1 if any child failed or was killed by the deadline.
