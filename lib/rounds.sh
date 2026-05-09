@@ -66,6 +66,12 @@ round_digest_path() {
   printf '%s/digest.md' "$dir"
 }
 
+round_hypotheses_path() {
+  local run_id="${1:-}" round_number="${2:-}" dir
+  dir="$(round_dir "$run_id" "$round_number")" || return $?
+  printf '%s/hypotheses.md' "$dir"
+}
+
 round_metadata_path() {
   local run_id="${1:-}" round_number="${2:-}" dir
   dir="$(round_dir "$run_id" "$round_number")" || return $?
@@ -111,6 +117,20 @@ _rounds_restore_completed_lenses_file() {
   else
     unset completed_lenses_file
   fi
+}
+
+_rounds_all_lenses_completed() {
+  local completion_file="$1"
+  shift
+  local lens_entry
+
+  [[ -n "$completion_file" && -f "$completion_file" ]] || return 1
+
+  for lens_entry in "$@"; do
+    grep -qxF "$lens_entry" "$completion_file" 2>/dev/null || return 1
+  done
+
+  return 0
 }
 
 write_round_metadata() {
@@ -687,6 +707,7 @@ run_rounds() {
   local round lens_entry parallel_count local_count lens_total
   local original_completed_lenses_file had_completed_lenses_file
   local round_completed_lenses_file round_completed_lenses_dir round_rc
+  local current_round_dir previous_digest_path previous_hypotheses_path
 
   if [[ ! "$rounds_total" =~ ^[1-9][0-9]*$ ]]; then
     log_warn "Invalid rounds_total: $rounds_total"
@@ -703,8 +724,18 @@ run_rounds() {
   # shellcheck disable=SC2046 # The issue explicitly requires seq-driven rounds.
   for round in $(seq 1 "$rounds_total"); do
     if is_round_completed "$round"; then
-      log_info "[round $round/$rounds_total] Skipping completed round"
-      continue
+      round_completed_lenses_file="${completed_lenses_file:-}"
+      if (( rounds_total > 1 )); then
+        round_completed_lenses_file="$(_rounds_lens_completion_path "$round")"
+      fi
+
+      if [[ -n "${RESUME_RUN_ID:-}" ]] \
+          && ! _rounds_all_lenses_completed "$round_completed_lenses_file" "${lens_list[@]}"; then
+        log_info "[round $round/$rounds_total] Completed marker has pending lenses for current selection; resuming"
+      else
+        log_info "[round $round/$rounds_total] Skipping completed round"
+        continue
+      fi
     fi
 
     if [[ -f "$LOG_BASE/.rate-limit-abort" ]]; then
@@ -714,6 +745,28 @@ run_rounds() {
 
     if (( rounds_total > 1 )); then
       log_info "[round $round/$rounds_total] Starting"
+    fi
+
+    CURRENT_ROUND_INDEX=""
+    CURRENT_ROUND_TOTAL=""
+    PRIOR_ROUND_DIGEST_FILE=""
+    HYPOTHESES_TO_VERIFY_FILE=""
+    CURRENT_ROUND_OUTPUT_DIR="${OUTPUT_DIR:-}"
+
+    if (( rounds_total > 1 )); then
+      CURRENT_ROUND_INDEX="$round"
+      CURRENT_ROUND_TOTAL="$rounds_total"
+
+      if (( round > 1 )); then
+        previous_digest_path="$(round_digest_path "${RUN_ID:-}" "$((round - 1))")" || return $?
+        previous_hypotheses_path="$(round_hypotheses_path "${RUN_ID:-}" "$((round - 1))")" || return $?
+        [[ -f "$previous_digest_path" ]] && PRIOR_ROUND_DIGEST_FILE="$previous_digest_path"
+        [[ -f "$previous_hypotheses_path" ]] && HYPOTHESES_TO_VERIFY_FILE="$previous_hypotheses_path"
+      fi
+    fi
+
+    if ${LOCAL_MODE:-false} && ! ${OUTPUT_DIR_SET:-false}; then
+      CURRENT_ROUND_OUTPUT_DIR="$(round_lens_outputs_dir "${RUN_ID:-}" "$round")" || return $?
     fi
 
     had_completed_lenses_file=0
@@ -790,6 +843,19 @@ run_rounds() {
       set_stop_reason "$SUMMARY_FILE" "rate-limited"
       _rounds_restore_completed_lenses_file "$had_completed_lenses_file" "$original_completed_lenses_file"
       return 1
+    fi
+
+    current_round_dir="$(round_dir "${RUN_ID:-}" "$round")"
+    round_rc=$?
+    if (( round_rc != 0 )); then
+      _rounds_restore_completed_lenses_file "$had_completed_lenses_file" "$original_completed_lenses_file"
+      return "$round_rc"
+    fi
+    build_round_digest "$current_round_dir"
+    round_rc=$?
+    if (( round_rc != 0 )); then
+      _rounds_restore_completed_lenses_file "$had_completed_lenses_file" "$original_completed_lenses_file"
+      return "$round_rc"
     fi
 
     mark_round_completed "$round"

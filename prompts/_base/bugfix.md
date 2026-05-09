@@ -48,6 +48,8 @@ Every issue MUST have this structure:
 - Read the codebase thoroughly. Trace execution paths. Check edge cases.
 - Run tests if available to verify bugs: look for test scripts in package.json, Makefile, etc.
 
+{{ROUND_CONTEXT_SECTION}}
+
 {{SPEC_SECTION}}
 
 {{LENS_BODY}}

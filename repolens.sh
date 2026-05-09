@@ -317,6 +317,7 @@ MAX_COST=""
 DRY_RUN=false
 LOCAL_MODE=false
 OUTPUT_DIR=""
+OUTPUT_DIR_SET=false
 FORGE_PROVIDER=""
 FORGE_HOST=""
 FORGE_REPO_SLUG=""
@@ -416,6 +417,7 @@ while [[ $# -gt 0 ]]; do
     --output)
       [[ $# -ge 2 ]] || die "Option --output requires a path argument."
       OUTPUT_DIR="$2"
+      OUTPUT_DIR_SET=true
       shift 2
       ;;
     --forge)
@@ -482,6 +484,12 @@ else
   ROUNDS=1
   validate_rounds "$MODE" "$ROUNDS" "--rounds"
 fi
+
+CURRENT_ROUND_INDEX=""
+CURRENT_ROUND_TOTAL=""
+CURRENT_ROUND_OUTPUT_DIR=""
+PRIOR_ROUND_DIGEST_FILE=""
+HYPOTHESES_TO_VERIFY_FILE=""
 
 AGENT_TIMEOUT_SECS="$(resolve_agent_timeout "$MODE")"
 AGENT_KILL_GRACE_SECS="$(resolve_agent_kill_grace)"
@@ -1552,6 +1560,14 @@ run_lens() {
   vars+="|FORGE_ENHANCEMENT_LABEL_CREATE=$(forge_prompt_label_create "enhancement" "a2eeef" "$FORGE_REPO_SLUG" "$PROJECT_PATH")"
   vars+="|FORGE_ISSUE_LIST_OPEN=$(forge_prompt_issue_list "open" "$FORGE_REPO_SLUG" "$PROJECT_PATH")"
   vars+="|FORGE_ISSUE_LIST_CLOSED=$(forge_prompt_issue_list "closed" "$FORGE_REPO_SLUG" "$PROJECT_PATH")"
+  [[ -n "${CURRENT_ROUND_INDEX:-}" ]] && vars+="|ROUND_INDEX=${CURRENT_ROUND_INDEX}"
+  [[ -n "${CURRENT_ROUND_TOTAL:-}" ]] && vars+="|ROUND_TOTAL=${CURRENT_ROUND_TOTAL}"
+  if [[ -n "${PRIOR_ROUND_DIGEST_FILE:-}" ]]; then
+    vars+="|PRIOR_ROUND_DIGEST=@${PRIOR_ROUND_DIGEST_FILE}"
+  fi
+  if [[ -n "${HYPOTHESES_TO_VERIFY_FILE:-}" ]]; then
+    vars+="|HYPOTHESES_TO_VERIFY=@${HYPOTHESES_TO_VERIFY_FILE}"
+  fi
   [[ -n "$CHANGE_STATEMENT" ]] && vars+="|CHANGE_STATEMENT=${CHANGE_STATEMENT}"
   [[ -n "$SOURCE_FILE" ]] && vars+="|SOURCE_PATH=${SOURCE_FILE}"
   [[ -n "$LOGS_PATH" ]] && vars+="|LOGS_PATH=${LOGS_PATH}"
@@ -1566,7 +1582,7 @@ run_lens() {
   # Compose prompt (pass local mode params)
   local prompt lens_local_dir=""
   if $LOCAL_MODE; then
-    lens_local_dir="$OUTPUT_DIR/$domain/$lens_id"
+    lens_local_dir="${CURRENT_ROUND_OUTPUT_DIR:-$OUTPUT_DIR}/$domain/$lens_id"
     mkdir -p "$lens_local_dir"
     prompt="$(compose_prompt "$base_file" "$lens_file" "$vars" "$SPEC_FILE" "$MODE" "$MAX_ISSUES" "$SOURCE_FILE" "$HOSTED" "true" "$lens_local_dir")"
   else
@@ -1794,83 +1810,11 @@ run_lens() {
 }
 
 # --- Execute lenses ---
-if $PARALLEL; then
-  log_info "Running in parallel mode (max $MAX_PARALLEL concurrent)"
-  init_parallel "$LOG_BASE/.semaphore" "$MAX_PARALLEL"
-
-  parallel_count=0
-  for lens_entry in "${LENS_LIST[@]}"; do
-    # Skip spawning new lenses if a sibling tripped the rate-limit detector.
-    # In-flight children continue; the summary still records skipped lenses so
-    # --resume picks them up.
-    if [[ -f "$LOG_BASE/.rate-limit-abort" ]]; then
-      log_warn "Rate-limit abort detected. Skipping remaining lenses."
-      for skip_entry in "${LENS_LIST[@]:$parallel_count}"; do
-        skip_domain="${skip_entry%%/*}"
-        skip_lens="${skip_entry#*/}"
-        if ! is_lens_completed "$skip_entry"; then
-          record_lens "$SUMMARY_FILE" "$skip_domain" "$skip_lens" 0 "skipped" 0 0
-        fi
-      done
-      set_stop_reason "$SUMMARY_FILE" "rate-limited"
-      break
-    fi
-    parallel_count=$((parallel_count + 1))
-    spawn_lens "$lens_entry" run_lens "$lens_entry"
-  done
-
-  if ! wait_all; then
-    log_warn "Some lenses exited with errors."
-  fi
-
-  # Children may have tripped the abort after the spawn loop finished.
-  # Make sure the stop_reason is recorded even then.
-  if [[ -f "$LOG_BASE/.rate-limit-abort" ]]; then
-    set_stop_reason "$SUMMARY_FILE" "rate-limited"
-  fi
-else
-  log_info "Running in sequential mode"
-  local_count=0
-  for lens_entry in "${LENS_LIST[@]}"; do
-    # Check for rate-limit abort from a previous lens in this run.
-    if [[ -f "$LOG_BASE/.rate-limit-abort" ]]; then
-      log_warn "Rate-limit abort detected. Skipping remaining lenses."
-      for skip_entry in "${LENS_LIST[@]:$local_count}"; do
-        skip_domain="${skip_entry%%/*}"
-        skip_lens="${skip_entry#*/}"
-        if ! is_lens_completed "$skip_entry"; then
-          record_lens "$SUMMARY_FILE" "$skip_domain" "$skip_lens" 0 "skipped" 0 0
-        fi
-      done
-      set_stop_reason "$SUMMARY_FILE" "rate-limited"
-      break
-    fi
-    # Check global issue budget before starting next lens
-    if [[ -n "$MAX_ISSUES" && "$GLOBAL_ISSUES_CREATED" -ge "$MAX_ISSUES" ]]; then
-      log_info "Global issue budget exhausted ($GLOBAL_ISSUES_CREATED/$MAX_ISSUES). Skipping remaining lenses."
-      # Record remaining lenses as skipped
-      for skip_entry in "${LENS_LIST[@]:$local_count}"; do
-        skip_domain="${skip_entry%%/*}"
-        skip_lens="${skip_entry#*/}"
-        if ! is_lens_completed "$skip_entry"; then
-          record_lens "$SUMMARY_FILE" "$skip_domain" "$skip_lens" 0 "skipped" 0 0
-        fi
-      done
-      set_stop_reason "$SUMMARY_FILE" "max-issues-reached"
-      break
-    fi
-    local_count=$((local_count + 1))
-    log_info "--- Lens $local_count/$TOTAL_LENSES ---"
-    run_lens "$lens_entry"
-  done
-fi
+RUN_ROUNDS_RC=0
+run_rounds "$ROUNDS" LENS_LIST
+RUN_ROUNDS_RC=$?
 
 # --- Finalize ---
-round_stop_reason="$(jq -r '.stopped_reason // empty' "$SUMMARY_FILE" 2>/dev/null || true)"
-if [[ -z "$round_stop_reason" && ! -f "$LOG_BASE/.rate-limit-abort" ]]; then
-  finalize_round "$RUN_ID" 1 || die "Unable to finalize round 1"
-fi
-
 finalize_summary "$SUMMARY_FILE"
 
 log_info "=============================="
@@ -1888,6 +1832,10 @@ jq '.' "$SUMMARY_FILE"
 # per-lens statuses, so --resume picks up seamlessly.
 if [[ -f "$LOG_BASE/.rate-limit-abort" ]]; then
   exit 1
+fi
+
+if [[ "$RUN_ROUNDS_RC" -ne 0 ]]; then
+  exit "$RUN_ROUNDS_RC"
 fi
 
 if [[ "${REPOLENS_FINAL_STATE:-finished}" == "interrupted" ]]; then

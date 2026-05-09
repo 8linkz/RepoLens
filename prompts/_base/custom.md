@@ -65,6 +65,8 @@ Every issue MUST have this structure:
 - Check configuration files, dependencies, build scripts — not just source code.
 - Think about both obvious and subtle impacts of the change.
 
+{{ROUND_CONTEXT_SECTION}}
+
 {{SPEC_SECTION}}
 
 {{LENS_BODY}}

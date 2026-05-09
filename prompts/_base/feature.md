@@ -47,6 +47,8 @@ Every issue MUST have this structure:
 - Read the codebase thoroughly to understand what exists before recommending what's missing.
 - Check documentation, configuration, dependencies, and existing patterns.
 
+{{ROUND_CONTEXT_SECTION}}
+
 {{SPEC_SECTION}}
 
 {{LENS_BODY}}
