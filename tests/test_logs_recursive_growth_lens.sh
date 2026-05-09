@@ -13,11 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Tests for issue #131: logs/error-cascades lens registration and prompt contract.
+# Tests for issue #133: logs/recursive-growth lens registration and prompt contract.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LENS_FILE="$SCRIPT_DIR/prompts/lenses/logs/error-cascades.md"
+LENS_FILE="$SCRIPT_DIR/prompts/lenses/logs/recursive-growth.md"
 DOMAINS_FILE="$SCRIPT_DIR/config/domains.json"
 
 PASS=0
@@ -90,10 +90,10 @@ mode_lenses() {
 }
 
 echo ""
-echo "=== Test Suite: logs/error-cascades lens (issue #131) ==="
+echo "=== Test Suite: logs/recursive-growth lens (issue #133) ==="
 echo ""
 
-assert_file_exists "error-cascades lens prompt exists" "$LENS_FILE"
+assert_file_exists "recursive-growth lens prompt exists" "$LENS_FILE"
 
 lens_content=""
 if [[ -f "$LENS_FILE" ]]; then
@@ -104,10 +104,10 @@ echo ""
 echo "Test 1: frontmatter is exact"
 frontmatter="$(sed -n '1,6p' "$LENS_FILE" 2>/dev/null)"
 expected_frontmatter="---
-id: error-cascades
+id: recursive-growth
 domain: logs
-name: Error Cascade Investigator
-role: Cascading Failure Analyst
+name: Recursive Growth Detector
+role: Unbounded Recursion Analyst
 ---"
 assert_eq "frontmatter matches issue contract" "$expected_frontmatter" "$frontmatter"
 
@@ -131,11 +131,11 @@ logs_mode="$(jq -r '.domains[] | select(.id == "logs") | .mode // "null"' "$DOMA
 assert_eq "logs domain registers expected lenses" "error-storms,error-cascades,retry-loops,recursive-growth" "$logs_lenses"
 assert_eq "logs domain stays mode-less" "null" "$logs_mode"
 audit_lenses="$(mode_lenses audit)"
-assert_contains "audit mode includes logs/error-cascades" "logs/error-cascades" "$audit_lenses"
+assert_contains "audit mode includes logs/recursive-growth" "logs/recursive-growth" "$audit_lenses"
 
 for mode in discover deploy opensource content; do
   lenses="$(mode_lenses "$mode")"
-  assert_not_contains "$mode mode excludes logs/error-cascades" "logs/error-cascades" "$lenses"
+  assert_not_contains "$mode mode excludes logs/recursive-growth" "logs/recursive-growth" "$lenses"
 done
 
 echo ""
@@ -143,70 +143,72 @@ echo "Test 4: prompt scope and sections match the issue"
 assert_contains "has expert focus section" "## Your Expert Focus" "$lens_content"
 assert_contains "has hunt section" "### What You Hunt For" "$lens_content"
 assert_contains "has investigation section" "### How You Investigate" "$lens_content"
+assert_contains "has evidence section" "### Evidence Required" "$lens_content"
+assert_contains "has threshold section" "### Threshold for Filing" "$lens_content"
 assert_contains "uses LOGS_PATH variable" '{{LOGS_PATH}}' "$lens_content"
 assert_contains "accepts single file" "single file" "$lens_content"
 assert_contains "accepts directory" "directory" "$lens_content"
-assert_contains "is distinct from error-storms" 'distinct from `error-storms`' "$lens_content"
+assert_contains "distinguishes error-storms" '`error-storms`' "$lens_content"
+assert_contains "distinguishes retry-loops" '`retry-loops`' "$lens_content"
+assert_contains "distinguishes error-cascades" '`error-cascades`' "$lens_content"
 
 echo ""
-echo "Test 5: prompt covers required cascade categories"
+echo "Test 5: prompt covers required growth categories"
 for term in \
-  "Causal Chains Across Components" \
-  "Fan-Out Failures from a Single Trigger" \
-  "Secondary-Error Masking the Primary" \
-  "Cleanup-of-Cleanup Loops" \
-  "Cross-Process Amplification" \
-  "Escalation Chains Hitting Circuit-Breakers / Retry-Caps / Storm-Caps"; do
+  "Depth / Level Counters Increasing Across Events" \
+  "Fan-Out Without Convergence" \
+  "Queue Depth Growing Across Time Windows" \
+  "Recursion Missing a Base-Case Condition" \
+  "Repeated Wrapping / Unwrapping / Re-Emission of the Same Payload"; do
   assert_contains "mentions $term" "$term" "$lens_content"
 done
 
 echo ""
-echo "Test 6: prompt requires causality-first investigation"
+echo "Test 6: prompt requires counter-over-time investigation"
 for term in \
-  "Sweep for dense error windows" \
-  "Pick the loudest symptom and walk backward in time" \
-  "Verify causality, not just correlation" \
-  "Trace the propagation path" \
-  "Check for reproducibility" \
-  "Locate source emit-sites" \
-  "Identify the recommended break-point"; do
+  "numeric fields that look like counters" \
+  "counter values in time order" \
+  "3 consecutive related events" \
+  "Look for the growth curve" \
+  "Search for the absent guard" \
+  "Find the emit site" \
+  "Distinguish from legitimate growth"; do
   assert_contains "mentions $term" "$term" "$lens_content"
 done
 
 echo ""
-echo "Test 7: prompt requires evidence fields"
+echo "Test 7: prompt states threshold and non-finding cases"
+assert_contains "requires monotonic threshold" "monotonically over ≥3 events" "$lens_content"
+assert_contains "requires 10x fan-out threshold" "10× growth between consecutive generations" "$lens_content"
+assert_contains "excludes database ingest growth" "database row count growing during ingest" "$lens_content"
+assert_contains "excludes bounded growth" "max reached" "$lens_content"
+assert_contains "rejects insufficient evidence" "without a third data point" "$lens_content"
+
+echo ""
+echo "Test 8: prompt requires evidence fields"
 for term in \
-  "Root failure" \
-  "The chain" \
-  "Temporal proximity" \
-  "End effect" \
-  "Source emit-sites" \
-  "Repetition evidence" \
-  "Recommended break-point"; do
+  "counter name and the values over time" \
+  "3-5 raw log exemplars" \
+  'copied verbatim from `{{LOGS_PATH}}`' \
+  "except for mandatory redaction of credentials, cookies, request bodies, tokens, emails, API keys, passwords, and other PII" \
+  "Reasoning about the missing base case" \
+  "emit site of the recursive call" \
+  "Distinction from legitimate growth"; do
   assert_contains "requires evidence $term" "$term" "$lens_content"
 done
-
-echo ""
-echo "Test 8: prompt covers filing threshold and splitting rule"
 for term in \
-  ">=3 distinct components / operations" \
-  "within minutes, not hours" \
-  ">=2 occurrences" \
-  "Each cascade gets **ONE issue**" \
-  "Do not file separate issues for each link"; do
-  assert_contains "mentions $term" "$term" "$lens_content"
+  "Replace sensitive values with placeholders such as" \
+  '<TOKEN>' \
+  '<REQUEST_BODY_REDACTED>' \
+  '<PII_REDACTED>'; do
+  assert_contains "requires redaction placeholder $term" "$term" "$lens_content"
 done
 
 echo ""
 echo "Test 9: prompt avoids forbidden tool-specific commands"
-for term in "grep" "journalctl" "jq"; do
+for term in "grep" "awk" "jq" "journalctl"; do
   assert_not_contains "does not prescribe $term" "$term" "$lens_content"
 done
-
-echo ""
-echo "Test 10: prompt keeps cascades separate from storms"
-assert_contains "routes single-component repetition to error-storms" "Single-component repetition" "$lens_content"
-assert_contains "three lines from one component are not enough" "Three lines from one component are not enough" "$lens_content"
 
 echo ""
 echo "Results: $PASS/$TOTAL passed, $FAIL failed"

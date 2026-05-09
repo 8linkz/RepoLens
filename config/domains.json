@@ -177,7 +177,7 @@
       "id": "logs",
       "name": "Runtime Log Analysis",
       "order": 28,
-      "lenses": ["error-storms", "error-cascades", "retry-loops"]
+      "lenses": ["error-storms", "error-cascades", "retry-loops", "recursive-growth"]
     },
     {
       "id": "kubernetes",

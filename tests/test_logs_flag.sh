@@ -156,10 +156,11 @@ echo "Test 6: Logs domain dry-run includes registered logs lenses"
 logs_dry_output="$(run_repolens "${RUN_PREFIX}-logs-dry" --domain logs --dry-run)"
 logs_dry_rc=$?
 assert_exit_code "logs domain dry-run exits zero" 0 "$logs_dry_rc"
-assert_contains "logs dry-run shows three lenses" "Lenses:       3" "$logs_dry_output"
+assert_contains "logs dry-run shows four lenses" "Lenses:       4" "$logs_dry_output"
 assert_contains "logs dry-run lists error-storms" "logs/error-storms" "$logs_dry_output"
 assert_contains "logs dry-run lists error-cascades" "logs/error-cascades" "$logs_dry_output"
 assert_contains "logs dry-run lists retry-loops" "logs/retry-loops" "$logs_dry_output"
+assert_contains "logs dry-run lists recursive-growth" "logs/recursive-growth" "$logs_dry_output"
 assert_contains "logs dry-run completes" "Dry run complete" "$logs_dry_output"
 
 echo ""
@@ -171,6 +172,7 @@ assert_not_contains "logs run is not treated as empty" "No lenses to run for dom
 assert_contains "logs run completes error-storms" "[logs/error-storms] DONE x3" "$logs_run_output"
 assert_contains "logs run completes error-cascades" "[logs/error-cascades] DONE x3" "$logs_run_output"
 assert_contains "logs run completes retry-loops" "[logs/retry-loops] DONE x3" "$logs_run_output"
+assert_contains "logs run completes recursive-growth" "[logs/recursive-growth] DONE x3" "$logs_run_output"
 
 echo ""
 echo "Test 8: Invalid domain still fails"
@@ -193,9 +195,9 @@ logs_lens_count="$(jq -r '.domains[] | select(.id == "logs") | .lenses | length'
 logs_mode="$(jq -r '.domains[] | select(.id == "logs") | .mode // "null"' "$SCRIPT_DIR/config/domains.json")"
 duplicate_orders="$(jq -r '.domains[].order' "$SCRIPT_DIR/config/domains.json" | sort -n | uniq -d)"
 assert_eq "logs domain order is 28" "28" "$logs_order"
-assert_eq "logs domain has three lenses" "3" "$logs_lens_count"
+assert_eq "logs domain has four lenses" "4" "$logs_lens_count"
 logs_lens_ids="$(jq -r '.domains[] | select(.id == "logs") | .lenses | join(",")' "$SCRIPT_DIR/config/domains.json")"
-assert_eq "logs domain registers expected lenses" "error-storms,error-cascades,retry-loops" "$logs_lens_ids"
+assert_eq "logs domain registers expected lenses" "error-storms,error-cascades,retry-loops,recursive-growth" "$logs_lens_ids"
 assert_eq "logs domain has no mode field" "null" "$logs_mode"
 assert_eq "domain order values are unique" "" "$duplicate_orders"
 
