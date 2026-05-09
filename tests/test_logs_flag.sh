@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Tests for issue #129/#130/#139/#141/#144/#146: --logs path plumbing and logs domain lens registration.
+# Tests for issue #129/#130/#139/#141/#144/#146/#148: --logs path plumbing and logs domain lens registration.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -157,12 +157,13 @@ echo "Test 6: Logs domain dry-run includes registered logs lenses"
 logs_dry_output="$(run_repolens "${RUN_PREFIX}-logs-dry" --domain logs --dry-run)"
 logs_dry_rc=$?
 assert_exit_code "logs domain dry-run exits zero" 0 "$logs_dry_rc"
-assert_contains "logs dry-run shows eleven lenses" "Lenses:       11" "$logs_dry_output"
+assert_contains "logs dry-run shows twelve lenses" "Lenses:       12" "$logs_dry_output"
 assert_contains "logs dry-run lists error-storms" "logs/error-storms" "$logs_dry_output"
 assert_contains "logs dry-run lists error-cascades" "logs/error-cascades" "$logs_dry_output"
 assert_contains "logs dry-run lists retry-loops" "logs/retry-loops" "$logs_dry_output"
 assert_contains "logs dry-run lists recursive-growth" "logs/recursive-growth" "$logs_dry_output"
 assert_contains "logs dry-run lists resource-leaks" "logs/resource-leaks" "$logs_dry_output"
+assert_contains "logs dry-run lists resource-exhaustion" "logs/resource-exhaustion" "$logs_dry_output"
 assert_contains "logs dry-run lists log-gaps" "logs/log-gaps" "$logs_dry_output"
 assert_contains "logs dry-run lists missing-heartbeats" "logs/missing-heartbeats" "$logs_dry_output"
 assert_contains "logs dry-run lists silent-failures" "logs/silent-failures" "$logs_dry_output"
@@ -182,6 +183,7 @@ assert_contains "logs run completes error-cascades" "[logs/error-cascades] DONE 
 assert_contains "logs run completes retry-loops" "[logs/retry-loops] DONE x3" "$logs_run_output"
 assert_contains "logs run completes recursive-growth" "[logs/recursive-growth] DONE x3" "$logs_run_output"
 assert_contains "logs run completes resource-leaks" "[logs/resource-leaks] DONE x3" "$logs_run_output"
+assert_contains "logs run completes resource-exhaustion" "[logs/resource-exhaustion] DONE x3" "$logs_run_output"
 assert_contains "logs run completes log-gaps" "[logs/log-gaps] DONE x3" "$logs_run_output"
 assert_contains "logs run completes missing-heartbeats" "[logs/missing-heartbeats] DONE x3" "$logs_run_output"
 assert_contains "logs run completes silent-failures" "[logs/silent-failures] DONE x3" "$logs_run_output"
@@ -210,9 +212,9 @@ logs_lens_count="$(jq -r '.domains[] | select(.id == "logs") | .lenses | length'
 logs_mode="$(jq -r '.domains[] | select(.id == "logs") | .mode // "null"' "$SCRIPT_DIR/config/domains.json")"
 duplicate_orders="$(jq -r '.domains[].order' "$SCRIPT_DIR/config/domains.json" | sort -n | uniq -d)"
 assert_eq "logs domain order is 28" "28" "$logs_order"
-assert_eq "logs domain has eleven lenses" "11" "$logs_lens_count"
+assert_eq "logs domain has twelve lenses" "12" "$logs_lens_count"
 logs_lens_ids="$(jq -r '.domains[] | select(.id == "logs") | .lenses | join(",")' "$SCRIPT_DIR/config/domains.json")"
-assert_eq "logs domain registers expected lenses" "error-storms,error-cascades,retry-loops,recursive-growth,resource-leaks,log-gaps,missing-heartbeats,silent-failures,state-machine-violations,lifecycle-violations,process-orphans" "$logs_lens_ids"
+assert_eq "logs domain registers expected lenses" "error-storms,error-cascades,retry-loops,recursive-growth,resource-leaks,resource-exhaustion,log-gaps,missing-heartbeats,silent-failures,state-machine-violations,lifecycle-violations,process-orphans" "$logs_lens_ids"
 assert_eq "logs domain has no mode field" "null" "$logs_mode"
 assert_eq "domain order values are unique" "" "$duplicate_orders"
 
