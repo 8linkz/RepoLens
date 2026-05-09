@@ -658,10 +658,9 @@ if [[ -n "$MAX_COST" ]]; then
 fi
 
 # --- Derive DONE streak threshold ---
-if [[ -n "$MAX_ISSUES" ]] || [[ "$MODE" == "discover" ]] || [[ "$MODE" == "deploy" ]] || [[ "$MODE" == "custom" ]] || [[ "$MODE" == "opensource" ]] || [[ "$MODE" == "content" ]]; then
+DONE_STREAK_REQUIRED="$(mode_default_depth "$MODE")"
+if [[ -n "$MAX_ISSUES" ]]; then
   DONE_STREAK_REQUIRED=1
-else
-  DONE_STREAK_REQUIRED=3
 fi
 
 # --- Safety cap: maximum iterations per lens ---

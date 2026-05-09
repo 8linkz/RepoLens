@@ -57,6 +57,24 @@ validate_agent() {
 # Agent runner
 # ---------------------------------------------------------------------------
 
+declare -A MODE_DEFAULT_DEPTH=(
+  [audit]=3
+  [feature]=3
+  [bugfix]=3
+  [custom]=1
+  [discover]=1
+  [deploy]=1
+  [opensource]=1
+  [content]=1
+)
+
+mode_default_depth() {
+  local mode="$1"
+  local depth="${MODE_DEFAULT_DEPTH[$mode]:-}"
+  [[ -n "$depth" ]] || die "Internal error: unsupported mode '$mode' for depth default"
+  printf '%s\n' "$depth"
+}
+
 agent_timeout_default_for_mode() {
   local mode="$1"
   case "$mode" in

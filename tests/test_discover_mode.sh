@@ -17,6 +17,9 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib/core.sh
+# shellcheck disable=SC1091  # path is dynamic via $SCRIPT_DIR; source directive above names the target.
+source "$SCRIPT_DIR/lib/core.sh"
 # shellcheck source=../lib/template.sh
 # shellcheck disable=SC1091  # path is dynamic via $SCRIPT_DIR; source directive above names the target.
 source "$SCRIPT_DIR/lib/template.sh"
@@ -399,16 +402,18 @@ else
 fi
 
 echo ""
-echo "Test 29: DONE streak is 1 for discover mode"
-if grep -q 'MODE.*==.*discover.*DONE_STREAK_REQUIRED=1\|DONE_STREAK_REQUIRED=1.*MODE.*==.*discover' "$SCRIPT_DIR/repolens.sh" || \
-   grep -A1 'MODE.*==.*discover' "$SCRIPT_DIR/repolens.sh" | grep -q 'DONE_STREAK_REQUIRED=1'; then
+echo "Test 29: Default depth is 1 for discover mode"
+if declare -F mode_default_depth >/dev/null 2>&1; then
+  discover_depth="$(mode_default_depth discover 2>/dev/null || true)"
+  assert_eq "discover default depth is 1" "1" "$discover_depth"
+elif declare -p MODE_DEFAULT_DEPTH >/dev/null 2>&1 && [[ "${MODE_DEFAULT_DEPTH[discover]:-}" == "1" ]]; then
   TOTAL=$((TOTAL + 1))
   PASS=$((PASS + 1))
-  echo "  PASS: discover mode triggers streak=1"
+  echo "  PASS: discover default depth is 1"
 else
   TOTAL=$((TOTAL + 1))
   FAIL=$((FAIL + 1))
-  echo "  FAIL: discover mode streak not set to 1"
+  echo "  FAIL: discover default depth not exposed by lib/core.sh"
 fi
 
 echo ""

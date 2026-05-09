@@ -66,10 +66,14 @@ The DONE streak protocol is LBA's deterministic termination mechanism. It ensure
 
 **Streak thresholds by mode:**
 
+RepoLens resolves these thresholds from a single per-mode default table; the values below are the CLI defaults.
+
 | Modes | Streak Required | Rationale |
 |-------|----------------|-----------|
 | audit, feature, bugfix | 3 | Multi-pass exhaustive search — the agent must confirm "nothing left to find" 3 consecutive times |
 | discover, deploy, custom, opensource, content | 1 | Single-pass modes — one comprehensive sweep is sufficient |
+
+Runs started with `--max-issues` use an effective 1× streak so the issue budget is enforced promptly.
 
 **Why 3 consecutive DONEs?** A single DONE can be premature — the agent may have missed areas it has not yet explored. Requiring 3 consecutive DONEs forces the agent through at least 3 iterations where it genuinely finds nothing new, providing high confidence of completeness. If the agent discovers something on iteration N+1, the streak resets to 0 and the cycle continues.
 
