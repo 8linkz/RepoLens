@@ -285,4 +285,29 @@ assert_eq "round 2 default local output is round-scoped" "$LOG_BASE/rounds/round
 assert_file_exists "round 1 digest exists before round 2" "$digest2"
 assert_file_exists "round 1 hypotheses exist before round 2" "$hypotheses2"
 
+echo ""
+echo "Test 6: run_rounds prefers hypotheses prepared for the current round"
+RUN_CONTEXTS=()
+META_CALLS=()
+
+run_meta_orchestrator() {
+  local round="$1" next_round="$2" hypotheses_path
+  META_CALLS+=("$round->$next_round")
+  hypotheses_path="$(round_hypotheses_path "$RUN_ID" "$next_round")" || return $?
+  printf '%s\n' '- Verify next-round prepared hypothesis.' > "$hypotheses_path"
+}
+
+RUN_ID="round-vars-next"
+LOG_BASE="$TMPDIR/logs/$RUN_ID"
+SUMMARY_FILE="$TMPDIR/summary-next.json"
+init_run_layout "$RUN_ID" 2 1 "${LENSES[@]}"
+run_rounds 2 LENSES
+rc=$?
+assert_eq "next-round hypotheses run exits successfully" "0" "$rc"
+assert_eq "next-round meta handoff occurs" "1->2" "${META_CALLS[*]}"
+
+IFS='|' read -r _round2_next _total2_next _digest2_next hypotheses2_next _output2_next <<< "${RUN_CONTEXTS[1]}"
+assert_eq "round 2 hypotheses prefer current round prepared file" "$LOG_BASE/rounds/round-2/hypotheses.md" "$hypotheses2_next"
+assert_file_exists "round 2 prepared hypotheses exist before lens dispatch" "$hypotheses2_next"
+
 finish

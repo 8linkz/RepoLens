@@ -90,7 +90,9 @@ compose_prompt() {
   local hosted="${8:-false}"
   local local_mode="${9:-false}" local_output_dir="${10:-}"
   local base_content lens_body spec_section prompt key value sentinel_seed
+  local pair char next i vars_len
   local prior_round_digest_sentinel hypotheses_to_verify_sentinel round_context_sentinel
+  local -a pairs=()
   local -A prompt_vars=()
 
   base_content="$(cat "$base_file")"
@@ -103,8 +105,28 @@ compose_prompt() {
   # Step 1: Insert lens body
   prompt="${base_content//\{\{LENS_BODY\}\}/$lens_body}"
 
-  # Step 2: Substitute variables from pipe-delimited string
-  IFS='|' read -ra pairs <<< "$vars_string"
+  # Step 2: Substitute variables from pipe-delimited string. A backslash can
+  # escape a literal pipe in values that are built by trusted callers.
+  pair=""
+  vars_len="${#vars_string}"
+  for ((i = 0; i < vars_len; i++)); do
+    char="${vars_string:i:1}"
+    if [[ "$char" == "\\" && "$((i + 1))" -lt "$vars_len" ]]; then
+      next="${vars_string:i+1:1}"
+      if [[ "$next" == "|" || "$next" == "\\" ]]; then
+        pair+="$next"
+        i=$((i + 1))
+        continue
+      fi
+    fi
+    if [[ "$char" == "|" ]]; then
+      pairs+=("$pair")
+      pair=""
+      continue
+    fi
+    pair+="$char"
+  done
+  pairs+=("$pair")
   for pair in "${pairs[@]}"; do
     [[ -n "$pair" ]] || continue
     key="${pair%%=*}"

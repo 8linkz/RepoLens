@@ -1516,6 +1516,12 @@ run_lens() {
   local lens_file="$LENSES_DIR/$domain/$lens_id.md"
   local base_file="$BASE_WRAPPER_FILE"
 
+  if [[ "$domain" == "custom" \
+      && -n "${CURRENT_ROUND_CUSTOM_LENSES_DIR:-}" \
+      && -f "${CURRENT_ROUND_CUSTOM_LENSES_DIR}/$domain/$lens_id.md" ]]; then
+    lens_file="${CURRENT_ROUND_CUSTOM_LENSES_DIR}/$domain/$lens_id.md"
+  fi
+
   # Check resume
   if is_lens_completed "$lens_entry"; then
     log_info "[$domain/$lens_id] Skipping (already completed in previous run)"
@@ -1526,6 +1532,9 @@ run_lens() {
   local lens_name domain_name lens_label domain_color
   lens_name="$(read_frontmatter "$lens_file" "name")"
   domain_name="$(jq -r --arg d "$domain" '.domains[] | select(.id == $d) | .name' "$DOMAINS_FILE")"
+  if [[ -z "$domain_name" && "$domain" == "custom" ]]; then
+    domain_name="Custom"
+  fi
   domain_color="$(jq -r --arg d "$domain" '.[$d] // "ededed"' "$COLORS_FILE")"
 
   local label_prefix

@@ -128,13 +128,40 @@ log_warn() {
 }
 
 # shellcheck disable=SC1090
+source "$SCRIPT_DIR/lib/streak.sh"
+# shellcheck disable=SC1090
+source "$SCRIPT_DIR/lib/template.sh"
+# shellcheck disable=SC1090
 source "$ROUNDS_LIB"
 
 echo ""
-echo "Test 0: default helper stubs use round markers and log meta handoff"
+echo "Test 0: default helpers use round markers and run meta handoff"
 LOG_LINES=()
 LOG_BASE="$TMPDIR/default-helper/logs"
 mkdir -p "$LOG_BASE"
+RUN_ID="default-helper"
+PROJECT_PATH="$SCRIPT_DIR"
+REPO_OWNER="local"
+REPO_NAME="RepoLens"
+MODE="audit"
+AGENT="codex"
+AGENT_TIMEOUT_SECS=5
+AGENT_KILL_GRACE_SECS=1
+BASE_PROMPTS_DIR="$SCRIPT_DIR/prompts/_base"
+LENSES_DIR="$SCRIPT_DIR/prompts/lenses"
+CURRENT_ROUND_TOTAL=8
+
+RUN_AGENT_CALLS=()
+run_agent() {
+  local agent="$1" prompt="$2" project_path="$3" timeout_secs="$4" kill_grace_secs="$5"
+  RUN_AGENT_CALLS+=("$agent:$project_path:$timeout_secs:$kill_grace_secs")
+  assert_contains "meta prompt includes prior digest content" "Digest for round 7" "$prompt"
+  printf '%s\n' \
+    'LENS: injection' \
+    'CUSTOM: auth-followup' \
+    'HYPOTHESES_TO_VERIFY:' \
+    '- Verify the selected follow-up angle.'
+}
 
 if is_round_completed 7; then
   completed_before=0
@@ -160,12 +187,24 @@ else
 fi
 assert_eq "default marker path lives under LOG_BASE/.rounds" "present" "$marker_state"
 
+mkdir -p "$LOG_BASE/rounds/round-7"
+printf '%s\n' 'Digest for round 7' > "$LOG_BASE/rounds/round-7/digest.md"
 run_meta_orchestrator 7 8
 rc=$?
 assert_eq "default run_meta_orchestrator exits successfully" "0" "$rc"
-assert_contains "default run_meta_orchestrator logs placeholder handoff" \
-                "Meta-orchestrator handoff to round 8 is pending implementation" \
+assert_eq "default run_meta_orchestrator invokes run_agent once" "1" "${#RUN_AGENT_CALLS[@]}"
+assert_contains "default run_meta_orchestrator logs real handoff" \
+                "Running meta-orchestrator for round 8" \
                 "$(join_by " " "${LOG_LINES[@]}")"
+assert_contains "default dispatch contains validated lens" \
+                "LENS: injection" \
+                "$(cat "$LOG_BASE/rounds/round-8/dispatch.md")"
+assert_contains "default dispatch contains custom category" \
+                "CUSTOM: auth-followup" \
+                "$(cat "$LOG_BASE/rounds/round-8/dispatch.md")"
+assert_contains "default hypotheses file contains extracted block" \
+                "Verify the selected follow-up angle." \
+                "$(cat "$LOG_BASE/rounds/round-8/hypotheses.md")"
 
 reset_case() {
   local name="$1"
