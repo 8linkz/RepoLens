@@ -604,6 +604,233 @@ forge_issue_list_count() {
   esac
 }
 
+# forge_issue_create <repo> <title> <body_file> [labels...]
+#   Create a GitHub issue with the given title, body content read from
+#   <body_file>, and any number of labels. Body is passed by file path so
+#   newlines, backticks, and markdown survive intact (a shell-quoted body
+#   string would mangle these).
+#
+#   Best-effort idempotency: before creating, the helper queries
+#   `gh issue list --search "in:title \"$title\"" --json title,url` and
+#   post-filters for an exact title match. On hit, it prints the existing
+#   URL and returns 0 without creating a duplicate. On any failure of the
+#   dedup search, the helper proceeds to creation. Race-free guarantees
+#   between parallel invocations are explicitly out of scope.
+#
+#   Rate-limit retry: if `gh` exits non-zero with a stderr matching
+#   "Retry-After:" or "API rate limit", the helper sleeps for the
+#   advertised duration (capped at 60s, default 30s when unparseable) and
+#   retries the create exactly once. A second failure returns 1 with a
+#   `_forge_warn` diagnostic — no infinite loops.
+#
+#   gh  -> see above
+#   tea -> dies with "not yet implemented (see #61)"
+#   fj  -> dies with "not yet implemented (see #62)"
+#
+#   Required args (repo, title, body_file) missing -> die loudly per the
+#   caller-bug tripwire convention. Unreadable body_file -> die.
+#
+#   Output: created (or existing) issue URL on stdout, single line.
+#           Diagnostics on stderr via _forge_warn.
+#   Exit:   0 on success, 1 on creation failure.
+#
+#   Depends on die() from lib/core.sh and jq being available on PATH for
+#   the dedup search.
+forge_issue_create() {
+  local repo="${1:-}" title="${2:-}" body_file="${3:-}"
+  [[ -n "$repo" && -n "$title" && -n "$body_file" ]] \
+    || die "forge_issue_create: missing argument (repo='$repo' title='$title' body_file='$body_file')"
+  shift 3
+  local -a labels=("$@")
+
+  [[ -r "$body_file" ]] \
+    || die "forge_issue_create: body_file '$body_file' not readable"
+
+  case "${FORGE_PROVIDER:-}" in
+    gh)
+      local existing_url
+      existing_url="$(_forge_gh_find_open_issue_by_title "$repo" "$title" 2>/dev/null || true)"
+      if [[ -n "$existing_url" ]]; then
+        printf '%s\n' "$existing_url"
+        return 0
+      fi
+
+      local -a argv=(issue create -R "$repo" --title "$title" --body-file "$body_file")
+      local lbl
+      for lbl in "${labels[@]}"; do
+        [[ -n "$lbl" ]] || continue
+        argv+=(--label "$lbl")
+      done
+
+      _forge_gh_with_rate_limit_retry "forge_issue_create" "$repo" "${argv[@]}"
+      return $?
+      ;;
+    tea)
+      die "forge_issue_create: tea backend not yet implemented (see #61)"
+      ;;
+    fj)
+      die "forge_issue_create: fj backend not yet implemented (see #62)"
+      ;;
+    *)
+      die "forge_issue_create: unknown provider '${FORGE_PROVIDER:-}' (expected gh|tea|fj)"
+      ;;
+  esac
+}
+
+# forge_issue_comment <repo> <issue_number> <body_file>
+#   Post a comment on an existing issue. Body is passed by file path so
+#   markdown formatting survives intact. Rate-limit retry policy mirrors
+#   forge_issue_create (single retry on Retry-After / API rate limit).
+#
+#   gh  -> `gh issue comment <issue_number> -R <repo> --body-file <body_file>`
+#   tea -> dies with "not yet implemented (see #61)"
+#   fj  -> dies with "not yet implemented (see #62)"
+#
+#   Output: comment URL on stdout (gh prints it natively).
+#   Exit:   0 on success, 1 on failure.
+forge_issue_comment() {
+  local repo="${1:-}" issue_number="${2:-}" body_file="${3:-}"
+  [[ -n "$repo" && -n "$issue_number" && -n "$body_file" ]] \
+    || die "forge_issue_comment: missing argument (repo='$repo' issue_number='$issue_number' body_file='$body_file')"
+
+  [[ -r "$body_file" ]] \
+    || die "forge_issue_comment: body_file '$body_file' not readable"
+
+  case "${FORGE_PROVIDER:-}" in
+    gh)
+      _forge_gh_with_rate_limit_retry "forge_issue_comment" "$repo" \
+        issue comment "$issue_number" -R "$repo" --body-file "$body_file"
+      return $?
+      ;;
+    tea)
+      die "forge_issue_comment: tea backend not yet implemented (see #61)"
+      ;;
+    fj)
+      die "forge_issue_comment: fj backend not yet implemented (see #62)"
+      ;;
+    *)
+      die "forge_issue_comment: unknown provider '${FORGE_PROVIDER:-}' (expected gh|tea|fj)"
+      ;;
+  esac
+}
+
+# Internal: best-effort exact-title lookup against open issues on $repo.
+# Prints URL on hit, empty on miss or any failure. Always returns 0 so
+# callers can use `result="$(_forge_gh_find_open_issue_by_title ...)"`
+# without short-circuiting through `set -e` semantics.
+_forge_gh_find_open_issue_by_title() {
+  local repo="$1" title="$2"
+
+  command -v jq >/dev/null 2>&1 || return 0
+
+  local search_out
+  search_out="$(gh issue list -R "$repo" --state open \
+    --search "in:title \"$title\"" --json title,url --limit 50 2>/dev/null)" || return 0
+  [[ -n "$search_out" ]] || return 0
+
+  local url
+  url="$(printf '%s' "$search_out" \
+    | jq -r --arg t "$title" '.[] | select(.title == $t) | .url' 2>/dev/null \
+    | head -n1)" || return 0
+  [[ -n "$url" ]] || return 0
+
+  printf '%s\n' "$url"
+}
+
+# Internal: invoke `gh <argv...>` with single retry on rate-limit failure.
+# Prints captured stdout (typically the issue/comment URL) on success.
+# On non-rate-limit failure or persistent rate-limit failure, emits a
+# `_forge_warn` diagnostic and returns 1.
+#
+# Args: <fn_name> <repo> <gh-argv...>
+#   fn_name: name of the public helper, used in warn messages.
+#   repo:    repo slug, included in warn messages for context.
+_forge_gh_with_rate_limit_retry() {
+  local fn_name="$1" repo="$2"
+  shift 2
+
+  local attempt=0
+  local max_attempts=2
+  local out err rc
+  while (( attempt < max_attempts )); do
+    attempt=$((attempt + 1))
+    err="$(mktemp 2>/dev/null)" || err=""
+    if [[ -n "$err" ]]; then
+      out="$(gh "$@" 2>"$err")"
+      rc=$?
+    else
+      out="$(gh "$@" 2>/dev/null)"
+      rc=$?
+    fi
+
+    if [[ "$rc" -eq 0 ]]; then
+      [[ -n "$err" ]] && rm -f "$err"
+      printf '%s\n' "$out"
+      return 0
+    fi
+
+    local err_content=""
+    if [[ -n "$err" && -s "$err" ]]; then
+      err_content="$(cat "$err" 2>/dev/null || true)"
+    fi
+    [[ -n "$err" ]] && rm -f "$err"
+
+    if (( attempt < max_attempts )) && _forge_is_rate_limit_error "$err_content"; then
+      local sleep_secs
+      sleep_secs="$(_forge_rate_limit_sleep_secs "$err_content")"
+      sleep "$sleep_secs"
+      continue
+    fi
+
+    local first_err=""
+    if [[ -n "$err_content" ]]; then
+      first_err="$(printf '%s\n' "$err_content" | head -n1)"
+    fi
+    _forge_warn "$fn_name: gh failed for repo=$repo rc=$rc err=${first_err:-<empty>}"
+    return 1
+  done
+
+  return 1
+}
+
+# Internal: returns 0 if stderr text indicates a rate-limit failure.
+_forge_is_rate_limit_error() {
+  local txt="${1:-}"
+  [[ -n "$txt" ]] || return 1
+  if [[ "$txt" == *"Retry-After"* ]] || [[ "$txt" == *"API rate limit"* ]] \
+     || [[ "$txt" == *"rate limit exceeded"* ]] || [[ "$txt" == *"secondary rate limit"* ]]; then
+    return 0
+  fi
+  return 1
+}
+
+# Internal: extract Retry-After seconds from stderr, capped at 60.
+# Falls back to 30 when no parseable number is present but the text
+# carries a rate-limit marker.
+_forge_rate_limit_sleep_secs() {
+  local txt="${1:-}"
+  local secs=""
+
+  if [[ "$txt" =~ Retry-After[[:space:]]*:?[[:space:]]*([0-9]+) ]]; then
+    secs="${BASH_REMATCH[1]}"
+  elif [[ "$txt" =~ retry[[:space:]]+after[[:space:]]+([0-9]+) ]]; then
+    secs="${BASH_REMATCH[1]}"
+  elif [[ "$txt" =~ reset[[:space:]]+in[[:space:]]+([0-9]+) ]]; then
+    secs="${BASH_REMATCH[1]}"
+  fi
+
+  if [[ -z "$secs" ]] || ! [[ "$secs" =~ ^[0-9]+$ ]]; then
+    secs=30
+  fi
+  if (( secs > 60 )); then
+    secs=60
+  fi
+  if (( secs < 1 )); then
+    secs=1
+  fi
+  printf '%s' "$secs"
+}
+
 # Internal: delegates to log_warn when logging.sh is sourced, otherwise
 # falls back to stderr so forge wrappers remain usable in library-level tests.
 _forge_warn() {
