@@ -1113,6 +1113,23 @@ for lens_entry in "${LENS_LIST[@]}"; do
   [[ -f "$lens_file" ]] || die "Missing lens prompt: $lens_file"
 done
 
+# --- Round-count mismatch gate on --resume ---
+# The original --rounds value of a resumed run is persisted in
+# rounds/round-1/metadata.json (written by init_run_layout). If a caller resumes
+# with a different --rounds value, the run identity changes silently: extra
+# rounds would execute from scratch with stale prior digests, or a smaller
+# count would silently stop short. Reject the mismatch with a clear error.
+# Legacy pre-#147 runs without per-round metadata are treated as unconstrained.
+if [[ -n "$RESUME_RUN_ID" ]]; then
+  resume_round1_metadata="$LOG_BASE/rounds/round-1/metadata.json"
+  if [[ -f "$resume_round1_metadata" ]]; then
+    persisted_rounds_total="$(jq -r '.rounds_total // empty' "$resume_round1_metadata" 2>/dev/null || true)"
+    if [[ -n "$persisted_rounds_total" && "$persisted_rounds_total" != "$ROUNDS" ]]; then
+      die "Resume of run $RUN_ID was originally executed with --rounds $persisted_rounds_total, cannot resume with --rounds $ROUNDS (round count is part of the run identity)"
+    fi
+  fi
+fi
+
 init_run_layout "$RUN_ID" "$ROUNDS" "$TOTAL_LENSES" "${LENS_LIST[@]}" || die "Unable to initialize round layout"
 
 # --- Check resume state ---
