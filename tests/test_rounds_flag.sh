@@ -181,11 +181,17 @@ run_repolens_case() {
 
   LAST_OUTPUT_FILE="$TMPDIR/output-$name.txt"
 
-  local env_args=(env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED PATH="$FAKE_BIN:$PATH")
+  # REPOLENS_MAX_ROUNDS=99 keeps the cross-mode safety ceiling (added in
+  # issue #173) out of the way so per-mode rounds caps (up to 10) can still
+  # be exercised without --i-know-this-is-expensive on the helper side.
+  local env_args=(env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED REPOLENS_MAX_ROUNDS=99 PATH="$FAKE_BIN:$PATH")
   if [[ "$env_rounds" != "__unset__" ]]; then
-    env_args=(env -u DONE_STREAK_REQUIRED PATH="$FAKE_BIN:$PATH" REPOLENS_ROUNDS="$env_rounds")
+    env_args=(env -u DONE_STREAK_REQUIRED REPOLENS_MAX_ROUNDS=99 PATH="$FAKE_BIN:$PATH" REPOLENS_ROUNDS="$env_rounds")
   fi
 
+  # --i-know-this-is-expensive bypasses the rounds>=4 ack gate added in issue
+   # #173 so the per-mode cap tests (--rounds 10) and the REPOLENS_ROUNDS=4
+   # case continue to exercise the rounds flag itself, not the new ack gate.
   "${env_args[@]}" bash "$SCRIPT_DIR/repolens.sh" \
     --project "$project" \
     --agent codex \
@@ -193,6 +199,7 @@ run_repolens_case() {
     --output "$TMPDIR/issues-$name" \
     --yes \
     --dry-run \
+    --i-know-this-is-expensive \
     "$@" >"$LAST_OUTPUT_FILE" 2>&1
   LAST_RC=$?
   register_created_run_id
@@ -207,7 +214,7 @@ run_repolens_default_output_case() {
 
   LAST_OUTPUT_FILE="$TMPDIR/output-$name.txt"
 
-  env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED PATH="$FAKE_BIN:$PATH" \
+  env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED REPOLENS_MAX_ROUNDS=99 PATH="$FAKE_BIN:$PATH" \
     bash "$SCRIPT_DIR/repolens.sh" \
       --project "$project" \
       --agent codex \
@@ -397,7 +404,7 @@ assert_contains "custom dry-run without --change keeps the change guard" "Mode '
 custom_project="$TMPDIR/project-custom-without-change"
 make_project "$custom_project"
 LAST_OUTPUT_FILE="$TMPDIR/output-custom-without-change.txt"
-env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED PATH="$FAKE_BIN:$PATH" \
+env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED REPOLENS_MAX_ROUNDS=99 PATH="$FAKE_BIN:$PATH" \
   bash "$SCRIPT_DIR/repolens.sh" \
     --project "$custom_project" \
     --agent codex \
@@ -405,6 +412,7 @@ env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED PATH="$FAKE_BIN:$PATH" \
     --output "$TMPDIR/issues-custom-without-change" \
     --yes \
     --mode custom \
+    --i-know-this-is-expensive \
     --rounds 10 >"$LAST_OUTPUT_FILE" 2>&1
 LAST_RC=$?
 register_created_run_id

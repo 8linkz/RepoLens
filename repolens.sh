@@ -131,6 +131,11 @@ Options:
   --hosted                Spin up project's Docker Compose in isolated network for DAST scanning and testing
   --yes, -y               Skip confirmation prompt (for CI/automation)
   --max-cost <amount>     Warn if min. cost estimate exceeds this dollar amount (real cost typically 2–5x higher)
+  --i-know-this-is-expensive
+                          Acknowledge high --rounds cost. Bypasses the
+                          rounds>=4 abort gate (which otherwise demands
+                          --max-cost AND --yes). Does NOT bypass the
+                          REPOLENS_MAX_ROUNDS cross-mode hard ceiling.
   --dry-run               Validate config and show what would run, then exit (no agents executed)
   --version               Show version and sponsor information, then exit
   --about                 Show tool description and sponsor information, then exit
@@ -207,6 +212,11 @@ Environment:
                            is unset; must be between 1 and 19.
   REPOLENS_ROUNDS          Fallback for --rounds when the CLI flag is unset.
                            Must be a positive integer within the mode cap.
+  REPOLENS_MAX_ROUNDS      Cross-mode hard ceiling for --rounds (default: 5).
+                           --rounds >= REPOLENS_MAX_ROUNDS aborts unconditionally,
+                           regardless of any CLI flag or --i-know-this-is-expensive
+                           ack. Raise this value in CI when high rounds are
+                           intentional. Must be a positive integer.
   REPOLENS_NO_VERIFIER     Fallback for --no-verifier. Set to "true"/"1" to
                            disable the verifier when the CLI flag is not used.
   REPOLENS_NO_TRIAGE       Fallback for --no-triage. Set to "true"/"1" to
@@ -345,6 +355,7 @@ LOGS_PATH=""
 HOSTED=false
 AUTO_YES=false
 MAX_COST=""
+EXPENSIVE_ACK=false
 DRY_RUN=false
 LOCAL_MODE=false
 OUTPUT_DIR=""
@@ -493,6 +504,10 @@ while [[ $# -gt 0 ]]; do
       MAX_COST="$2"
       shift 2
       ;;
+    --i-know-this-is-expensive)
+      EXPENSIVE_ACK=true
+      shift
+      ;;
     --version)
       show_version
       exit 0
@@ -563,6 +578,19 @@ elif [[ ${REPOLENS_ROUNDS+x} ]]; then
 else
   ROUNDS="$(mode_default_rounds "$MODE")"
   validate_rounds "$MODE" "$ROUNDS" "--rounds"
+fi
+
+# --- Cross-mode hard ceiling for --rounds (CI cost-runaway safety net) ---
+# REPOLENS_MAX_ROUNDS is independent of the per-mode ROUNDS_CAP_BY_MODE caps in
+# lib/core.sh; it is an additional ceiling that applies across every mode and
+# can be raised in CI by exporting a higher value. Uses >= semantics per the
+# issue's test plan: with the default of 5, --rounds 5 already aborts.
+REPOLENS_MAX_ROUNDS="${REPOLENS_MAX_ROUNDS:-5}"
+if ! [[ "$REPOLENS_MAX_ROUNDS" =~ ^[1-9][0-9]*$ ]]; then
+  die "REPOLENS_MAX_ROUNDS must be a positive integer, got: $REPOLENS_MAX_ROUNDS"
+fi
+if (( ROUNDS >= REPOLENS_MAX_ROUNDS )); then
+  die "--rounds $ROUNDS >= REPOLENS_MAX_ROUNDS=$REPOLENS_MAX_ROUNDS (cross-mode safety ceiling). Override by exporting REPOLENS_MAX_ROUNDS=<higher>."
 fi
 
 # --- Resolve --no-verifier ---
@@ -1378,7 +1406,7 @@ estimate_repo_bytes() {
 # Emits a multi-line block whose first line is the min cost dollar string
 # prefixed with "MIN_COST="; subsequent lines are human-readable breakdown.
 compute_cost_breakdown() {
-  local agent="$1" lenses="$2" streak="$3" path="$4" pricing_file="$5"
+  local agent="$1" lenses="$2" streak="$3" path="$4" pricing_file="$5" rounds="${6:-1}"
 
   local model
   model="$(resolve_agent_model "$agent" "$pricing_file")"
@@ -1404,11 +1432,14 @@ compute_cost_breakdown() {
       -v base_prompt="$base_prompt" -v input_cap="$input_cap" \
       -v out_per="$out_per" -v repo_tokens="$repo_tokens" \
       -v lenses="$lenses" -v streak="$streak" -v iter_factor="$iter_factor" \
+      -v rounds="$rounds" \
       'BEGIN {
         session_input = (repo_tokens < input_cap ? repo_tokens : input_cap) + base_prompt
         cost_per_session = (session_input / 1000000.0) * in_price + (out_per / 1000000.0) * out_price
         avg_iters = streak * iter_factor
-        est = lenses * avg_iters * cost_per_session
+        per_round_est = lenses * avg_iters * cost_per_session
+        if (rounds < 1) rounds = 1
+        est = per_round_est * rounds
 
         printf "MIN_COST=%.2f\n", est
 
@@ -1422,7 +1453,13 @@ compute_cost_breakdown() {
           printf "  repo:       ~%d source tokens  (input capped at %dk/session)\n", repo_tokens, input_cap/1000
         }
         printf "  per session: ~$%.4f  (~%d in + %d out tokens)\n", cost_per_session, session_input, out_per
-        printf "  sessions:   %d lenses x ~%.1f iterations (streak %d x %.1f iter-factor)\n", lenses, avg_iters, streak, iter_factor
+        printf "  sessions:   %d lenses x ~%.1f iterations (streak %d x %.1f iter-factor) x %d round(s)\n", lenses, avg_iters, streak, iter_factor, rounds
+        if (rounds > 1) {
+          printf "  per round:  ~$%.2f  (total = per-round x %d rounds)\n", per_round_est, rounds
+          for (r = 1; r <= rounds; r++) {
+            printf "    round-%d: ~$%.2f\n", r, per_round_est
+          }
+        }
       }'
 }
 
@@ -1470,7 +1507,7 @@ confirm_run() {
 
   local pricing_file="$SCRIPT_DIR/config/agent-pricing.json"
   local breakdown min_cost
-  breakdown="$(compute_cost_breakdown "$AGENT" "$TOTAL_LENSES" "$DONE_STREAK_REQUIRED" "$PROJECT_PATH" "$pricing_file")"
+  breakdown="$(compute_cost_breakdown "$AGENT" "$TOTAL_LENSES" "$DONE_STREAK_REQUIRED" "$PROJECT_PATH" "$pricing_file" "$ROUNDS")"
   min_cost="$(printf "%s\n" "$breakdown" | awk -F= '/^MIN_COST=/ {print $2; exit}')"
   local breakdown_lines
   breakdown_lines="$(printf "%s\n" "$breakdown" | grep -v '^MIN_COST=')"
@@ -1487,7 +1524,7 @@ confirm_run() {
     echo "Max issues:   (unlimited)"
   fi
   echo ""
-  echo "Min. cost estimate (lower bound — real runs typically 2–5x higher):  ~\$${min_cost}"
+  echo "Estimated cost: ~\$${min_cost}  (lens_count=${TOTAL_LENSES} x depth=${DONE_STREAK_REQUIRED} x rounds=${ROUNDS}, lower bound — real runs typically 2-5x higher)"
   printf "%s\n" "$breakdown_lines"
   echo "  Note: Estimator assumes one model per agent, 4 bytes/token, and a"
   echo "  capped per-session input budget. Tool-call churn and iteration"
@@ -1579,6 +1616,17 @@ confirm_autonomous_mode() {
   esac
 }
 
+# --- High-rounds explicit-ack gate ---
+# rounds >= 4 require either (--max-cost AND --yes) or --i-know-this-is-expensive.
+# This fires before --dry-run output too: a misconfigured CI runner with
+# --rounds 5 --dry-run still signals someone is about to drop --dry-run next.
+# Does NOT bypass REPOLENS_MAX_ROUNDS (the ceiling fires earlier, above).
+if (( ROUNDS >= 4 )) && ! $EXPENSIVE_ACK; then
+  if [[ -z "$MAX_COST" ]] || ! $AUTO_YES; then
+    die "rounds >= 4 requires --max-cost <USD> AND --yes (or pass --i-know-this-is-expensive)"
+  fi
+fi
+
 # --- Dry-run output ---
 if $DRY_RUN; then
   echo ""
@@ -1592,6 +1640,18 @@ if $DRY_RUN; then
     echo "Output:       local markdown ($OUTPUT_DIR)"
   fi
   echo ""
+  if [[ "$TOTAL_LENSES" -gt 0 ]]; then
+    _dry_pricing_file="$SCRIPT_DIR/config/agent-pricing.json"
+    if [[ -f "$_dry_pricing_file" ]]; then
+      _dry_breakdown="$(compute_cost_breakdown "$AGENT" "$TOTAL_LENSES" "$DONE_STREAK_REQUIRED" "$PROJECT_PATH" "$_dry_pricing_file" "$ROUNDS")"
+      _dry_min_cost="$(printf "%s\n" "$_dry_breakdown" | awk -F= '/^MIN_COST=/ {print $2; exit}')"
+      _dry_breakdown_lines="$(printf "%s\n" "$_dry_breakdown" | grep -v '^MIN_COST=')"
+      echo "Estimated cost: ~\$${_dry_min_cost}  (lens_count=${TOTAL_LENSES} x depth=${DONE_STREAK_REQUIRED} x rounds=${ROUNDS}, lower bound — real runs typically 2-5x higher)"
+      printf "%s\n" "$_dry_breakdown_lines"
+      unset _dry_pricing_file _dry_breakdown _dry_min_cost _dry_breakdown_lines
+      echo ""
+    fi
+  fi
   echo "Lenses that would run:"
   for lens_entry in "${LENS_LIST[@]}"; do
     echo "  $lens_entry"

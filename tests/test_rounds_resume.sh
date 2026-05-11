@@ -341,7 +341,7 @@ jq -n '{round_number:1,breadth:2,rounds_total:3,start_ts:"2026-01-01T00:00:00Z",
   > "$FAKE_LOG_BASE/rounds/round-1/metadata.json"
 
 mismatch_out="$TMPDIR/mismatch-out.txt"
-env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED PATH="$FAKE_BIN:$PATH" \
+env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED REPOLENS_MAX_ROUNDS=99 PATH="$FAKE_BIN:$PATH" \
   bash "$SCRIPT_DIR/repolens.sh" \
     --project "$mismatch_project" \
     --agent codex \
@@ -349,6 +349,7 @@ env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED PATH="$FAKE_BIN:$PATH" \
     --output "$TMPDIR/issues-mismatch" \
     --yes \
     --dry-run \
+    --i-know-this-is-expensive \
     --resume "$FAKE_RUN_ID" \
     --rounds 5 >"$mismatch_out" 2>&1
 mismatch_rc=$?
@@ -399,7 +400,7 @@ git -C "$legacy_project" init -q
 printf '# legacy resume project\n' > "$legacy_project/README.md"
 
 legacy_out="$TMPDIR/legacy-out.txt"
-env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED PATH="$FAKE_BIN:$PATH" \
+env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED REPOLENS_MAX_ROUNDS=99 PATH="$FAKE_BIN:$PATH" \
   bash "$SCRIPT_DIR/repolens.sh" \
     --project "$legacy_project" \
     --agent codex \
@@ -407,6 +408,7 @@ env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED PATH="$FAKE_BIN:$PATH" \
     --output "$TMPDIR/issues-legacy" \
     --yes \
     --dry-run \
+    --i-know-this-is-expensive \
     --resume "$LEGACY_RUN_ID" \
     --rounds 4 >"$legacy_out" 2>&1
 legacy_rc=$?
