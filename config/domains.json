@@ -522,7 +522,8 @@
         "clock-skew",
         "timeout-clusters",
         "deadlock-symptoms",
-        "data-loss-signals"
+        "data-loss-signals",
+        "transaction-anomalies"
       ]
     },
     {
