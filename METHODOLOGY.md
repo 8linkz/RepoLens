@@ -53,31 +53,38 @@ The fundamental insight is that LBA trades breadth-per-call for depth-per-call, 
 
 ---
 
-## The DONE×3 Streak Protocol
+## The DONE×N Streak Protocol (within-lens iteration)
 
-The DONE streak protocol is LBA's deterministic termination mechanism. It ensures that each lens runs long enough to be thorough, but stops when genuinely finished.
+The DONE streak protocol is LBA's deterministic termination mechanism for a **single lens**. It ensures that each lens runs long enough to be thorough, but stops when that lens is genuinely finished. The depth threshold `N` is controlled by `--depth N` (per-mode defaults below).
+
+This mechanism operates strictly *within* one lens. In particular:
+
+- **Per-lens** — scoped to a single lens invocation chain. Other lenses run their own independent DONE streaks.
+- **Single-context but with fresh agent invocations** — each iteration is a fresh agent process, not a continuation of the previous one. There is no in-process conversational memory between iterations.
+- **Backed by external memory via the GitHub issue list** — the lens reads the existing repository issues at the start of each iteration to avoid duplicating prior findings. The issue tracker, not the agent's context, is the persistent state.
+- **Complementary to — not equivalent to — `--rounds N`.** DONE×N controls how deeply *one* lens digs. `--rounds N` controls how many times the *entire selected lens set* is dispatched, with cross-pollination via a meta-orchestrator between rounds. See the "Multi-Round Investigation with Meta-Orchestrator" section below and the `--rounds N` vs `--depth N` cross-reference for details.
 
 **How it works:**
 
 1. Each lens runs in an iteration loop.
 2. After each iteration, the agent's output is inspected: if the first or last word (normalized to uppercase) equals "DONE", the iteration counts toward the streak.
 3. A `done_streak` counter tracks consecutive DONE detections. If the agent outputs DONE, the counter increments; if it does not, the counter resets to zero.
-4. When `done_streak` reaches the required threshold, the lens loop exits and the lens is marked complete.
+4. When `done_streak` reaches the required threshold `N`, the lens loop exits and the lens is marked complete.
 
 **Streak thresholds by mode:**
 
-RepoLens resolves these thresholds from a single per-mode default table; the values below are the CLI defaults.
+RepoLens resolves these thresholds from a single per-mode default table; the values below are the CLI defaults and may be overridden with `--depth N` (valid range: 1..19).
 
-| Modes | Streak Required | Rationale |
-|-------|----------------|-----------|
+| Modes | Streak Required (N) | Rationale |
+|-------|---------------------|-----------|
 | audit, feature, bugfix | 3 | Multi-pass exhaustive search — the agent must confirm "nothing left to find" 3 consecutive times |
 | discover, deploy, custom, opensource, content | 1 | Single-pass modes — one comprehensive sweep is sufficient |
 
 Runs started with `--max-issues` use an effective 1× streak so the issue budget is enforced promptly.
 
-**Why 3 consecutive DONEs?** A single DONE can be premature — the agent may have missed areas it has not yet explored. Requiring 3 consecutive DONEs forces the agent through at least 3 iterations where it genuinely finds nothing new, providing high confidence of completeness. If the agent discovers something on iteration N+1, the streak resets to 0 and the cycle continues.
+**Why N=3 consecutive DONEs (in audit/feature/bugfix)?** A single DONE can be premature — the agent may have missed areas it has not yet explored. Requiring 3 consecutive DONEs forces the agent through at least 3 iterations where it genuinely finds nothing new, providing high confidence of completeness. If the agent discovers something on iteration k+1, the streak resets to 0 and the cycle continues.
 
-A safety cap of 20 iterations per lens prevents runaway loops regardless of DONE detection.
+A safety cap of 20 iterations per lens prevents runaway loops regardless of DONE detection and regardless of `--depth`.
 
 ---
 
@@ -110,20 +117,82 @@ Mode isolation is implemented through three mechanisms:
 
 **The 8 modes:**
 
-| Mode | Purpose | Visible Lenses |
-|------|---------|---------------|
-| **audit** | Find real issues in existing code | 243 (code + toolgate + logs domains) |
-| **feature** | Identify missing capabilities | 243 |
-| **bugfix** | Find bugs backed by evidence | 243 |
-| **custom** | Change impact analysis | 243 |
-| **discover** | Brainstorm product ideas | 14 (discovery domain only) |
-| **deploy** | Read-only live server or Android inspection | `deployment` domain (26 server lenses) or `android` domain (17 Android lenses, including `apk-dependencies`, `native-libraries`, `manifest-audit`, `network-security-config`, `exported-components`, `intent-filters`, `intent-fuzzing`, `drozer-attack-surface`, `logcat-leaks`, `ssl-pinning-mitm`, `frida-runtime`, `detection-bypass`, `keystore-extraction`, and `gradle-static-analysis`) |
-| **opensource** | Public release risk assessment | 13 (open-source readiness only) |
-| **content** | Content quality and creation | 17 (content quality only) |
+The `--depth default` and `--rounds default` columns reflect the CLI defaults as of this revision. `--depth` controls within-lens iteration; `--rounds` controls across-lens cross-pollination via the meta-orchestrator (see next section). Modes marked "1 (locked)" cap `--rounds` at 1 by design — single-pass operation is intrinsic to those modes.
+
+| Mode | Purpose | Visible Lenses | `--depth` default | `--rounds` default |
+|------|---------|---------------|-------------------|--------------------|
+| **audit** | Find real issues in existing code | 243 (code + toolgate + logs domains) | 3 | 1 |
+| **feature** | Identify missing capabilities | 243 | 3 | 1 |
+| **bugfix** | Find bugs backed by evidence | 243 | 3 | 1 |
+| **custom** | Change impact analysis | 243 | 1 | 1 |
+| **discover** | Brainstorm product ideas | 14 (discovery domain only) | 1 | 1 (locked) |
+| **deploy** | Read-only live server or Android inspection | `deployment` domain (26 server lenses) or `android` domain (17 Android lenses, including `apk-dependencies`, `native-libraries`, `manifest-audit`, `network-security-config`, `exported-components`, `intent-filters`, `intent-fuzzing`, `drozer-attack-surface`, `logcat-leaks`, `ssl-pinning-mitm`, `frida-runtime`, `detection-bypass`, `keystore-extraction`, and `gradle-static-analysis`) | 1 | 1 (locked) |
+| **opensource** | Public release risk assessment | 13 (open-source readiness only) | 1 | 1 (locked) |
+| **content** | Content quality and creation | 17 (content quality only) | 1 | 1 (locked) |
 
 Each mode uses its own severity schema (e.g., audit uses CRITICAL/HIGH/MEDIUM/LOW, discover uses SMALL/MEDIUM/LARGE/XL, custom uses BREAKING/REQUIRED/RECOMMENDED/OPTIONAL) and its own GitHub label format.
 
 Deploy mode is unique in that it does not require a git repository — it operates on live servers using system commands (systemctl, ss, df, journalctl) in a strictly read-only fashion, with explicit legal authorization gates.
+
+---
+
+## Multi-Round Investigation with Meta-Orchestrator
+
+Some root causes are **cross-lens AND cross-domain**: a configuration-loading bug that leaks secrets, a race condition that only manifests as a latency anomaly observed by a different lens, a build-system quirk that breaks tests in a way only the testing lens can describe. A single lens running DONE×N cannot reach these findings *by design* — its context is narrow and its expertise is single-purpose. Multi-round investigation lets early-round findings inform later-round lens prompts via a **meta-orchestrator** that synthesizes intermediate state between rounds.
+
+**Pipeline:**
+
+```
+triage → round 1 (all selected lenses) → meta-orchestrator → round 2 (informed lenses) → … → verifier → synthesizer → filing batch
+```
+
+- **triage** (optional, default ON for `bugreport`) — a round-0 prefix phase that narrows the lens selection or seeds shared context.
+- **round 1..N** — the selected lens set runs in parallel. Each lens still uses its own DONE×N streak internally. Round outputs are written to `logs/<run-id>/rounds/round-N/lens-outputs/*.md` plus a `digest.md` and `hypotheses.md`.
+- **meta-orchestrator** — runs *between* rounds. It reads the round-N digest, identifies cross-lens patterns, and proposes the round-N+1 dispatch (which lenses to re-run, with what prior context attached as untrusted reference material). Mode-specific orchestrator templates exist for `discover` and `content`; other modes use the default template.
+- **verifier** (optional, default ON for `bugreport`, OFF elsewhere; opt out with `--no-verifier`) — independently re-checks proposed findings before they become issues.
+- **synthesizer** — consolidates the cross-round manifest, deduplicates findings, and makes cross-link decisions.
+- **filing batch** — one parallel filer per manifest cluster (per-cluster `.lock`) creates the GitHub issues.
+
+**When to use `--rounds > 1`:**
+
+- Bug investigations where the symptom and the root cause are likely to live in different domains.
+- Deep audits of complex systems where systemic issues are suspected.
+- Any case where a single-pass run yields findings that look like consequences of a deeper, undiscovered cause.
+
+**When NOT to use `--rounds > 1`:**
+
+- `deploy` — runs against a live server, read-only by design, single-pass. Locked to `--rounds 1`.
+- `opensource` — single-pass readiness check. Locked to `--rounds 1`.
+- `content` — content quality is a single-pass review. Locked to `--rounds 1`.
+- `discover` — brainstorming pass is intentionally single-pass. Locked to `--rounds 1`.
+
+A cross-mode safety ceiling (`REPOLENS_MAX_ROUNDS`, default 5) aborts excessive `--rounds` values irrespective of mode. The `--i-know-this-is-expensive` flag bypasses the soft abort gate at `rounds >= 4` but does NOT bypass this hard ceiling.
+
+**Cost shape:**
+
+```
+cost ≈ rounds × breadth × depth × per-lens-cost
+     + (rounds − 1) × meta-orchestrator-cost
+     + verifier
+     + synthesizer
+     + filing-batch
+```
+
+The meta-orchestrator runs *between* rounds, so `N` rounds need `N − 1` orchestrator passes. The dry-run cost estimator (`--dry-run`) scales its estimate by `depth × rounds` and warns when `--rounds >= 4` is invoked without `--i-know-this-is-expensive`.
+
+### `--rounds N` vs `--depth N`
+
+The two flags are independent dimensions of search effort and should not be confused:
+
+- **`--depth N`** — within-lens iteration intensity. Sets the DONE-streak threshold a single lens must reach before terminating. Higher depth makes one lens dig harder against its own narrow domain.
+- **`--rounds N`** — across-lens cross-pollination. Re-dispatches the entire selected lens set `N` times, with the meta-orchestrator carrying findings from round `k` into round `k+1`. Higher rounds let early findings in one domain inform later prompts in another.
+
+Worked examples:
+
+- `--depth 5`: a single security lens iterates 5 deep passes against the auth module before declaring DONE. The lens's domain does not change; only its persistence does.
+- `--rounds 3`: round 1 surfaces a config-loading bug, the meta-orchestrator notices that the affected code path touches secrets handling, and round 2 re-runs secrets-related lenses with that context. Round 3 can then re-examine downstream effects with both prior digests as reference.
+
+The flags can be combined. Effective cost is multiplicative (see the cost shape formula above).
 
 ---
 
