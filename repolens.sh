@@ -503,6 +503,7 @@ while [[ $# -gt 0 ]]; do
     --output)
       [[ $# -ge 2 ]] || die "Option --output requires a path argument."
       OUTPUT_DIR="$2"
+      # shellcheck disable=SC2034
       OUTPUT_DIR_SET=true
       shift 2
       ;;
@@ -920,12 +921,15 @@ validate_done_depth() {
   fi
 }
 
+if [[ -n "$DONE_STREAK_REQUIRED_ENV" ]]; then
+  log_warn "DONE_STREAK_REQUIRED is deprecated; use --depth N instead"
+fi
+
 if $DEPTH_SET; then
   validate_done_depth "--depth" "$DEPTH"
   DONE_STREAK_REQUIRED="$DEPTH"
 elif [[ -n "$DONE_STREAK_REQUIRED_ENV" ]]; then
   validate_done_depth "DONE_STREAK_REQUIRED" "$DONE_STREAK_REQUIRED_ENV"
-  log_warn "DONE_STREAK_REQUIRED is deprecated; use --depth N instead"
   DONE_STREAK_REQUIRED="$DONE_STREAK_REQUIRED_ENV"
 fi
 

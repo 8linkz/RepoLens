@@ -209,7 +209,7 @@ run_repolens_case "flag-wins" "3" --depth 2
 register_created_run_id
 assert_eq "flag plus env exits successfully" "0" "$LAST_RC"
 assert_eq "flag wins and runs fake agent twice" "2" "$(agent_call_count)"
-assert_eq "ignored env alias emits no warning" "0" "$(warning_count)"
+assert_eq "flag plus env emits exactly one deprecation warning" "1" "$(warning_count)"
 
 echo ""
 echo "Test 4: default audit depth remains 3"

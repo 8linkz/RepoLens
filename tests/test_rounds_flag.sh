@@ -45,6 +45,7 @@ FAKE_BIN="$TMPDIR/bin"
 LAST_OUTPUT_FILE=""
 LAST_RC=0
 LAST_RUN_ID=""
+LAST_EXPLICIT_OUTPUT_DIR=""
 
 pass_with() {
   local desc="$1"
@@ -226,6 +227,30 @@ run_repolens_default_output_case() {
   register_created_run_id
 }
 
+run_repolens_explicit_output_case() {
+  local name="$1"
+  shift
+
+  local project="$TMPDIR/project-$name"
+  make_project "$project"
+
+  LAST_OUTPUT_FILE="$TMPDIR/output-$name.txt"
+  LAST_EXPLICIT_OUTPUT_DIR="$TMPDIR/issues-$name"
+
+  env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED REPOLENS_MAX_ROUNDS=99 PATH="$FAKE_BIN:$PATH" \
+    bash "$SCRIPT_DIR/repolens.sh" \
+      --project "$project" \
+      --agent codex \
+      --focus naming \
+      --local \
+      --output "$LAST_EXPLICIT_OUTPUT_DIR" \
+      --yes \
+      --depth 1 \
+      "$@" >"$LAST_OUTPUT_FILE" 2>&1
+  LAST_RC=$?
+  register_created_run_id
+}
+
 assert_rounds_table_entry() {
   local mode="$1"
   local expected="$2"
@@ -311,6 +336,16 @@ assert_contains "default output is the round lens output root" \
                 "$run_dir/rounds/round-1/lens-outputs" \
                 "$(last_output)"
 assert_dir_exists "default output root exists under round-1" "$run_dir/rounds/round-1/lens-outputs"
+
+echo ""
+echo "Test 4c: local --output keeps lens output under caller-provided root"
+run_repolens_explicit_output_case "explicit-output-root"
+assert_eq "explicit output run exits successfully" "0" "$LAST_RC"
+run_dir="$(last_run_dir)"
+assert_dir_exists "explicit output lens directory is caller-rooted" \
+                  "$LAST_EXPLICIT_OUTPUT_DIR/code-quality/naming"
+assert_dir_missing "explicit output does not reroute lens directory to round logs" \
+                   "$run_dir/rounds/round-1/lens-outputs/code-quality/naming"
 
 echo ""
 echo "Test 5: REPOLENS_ROUNDS is used when --rounds is absent"
