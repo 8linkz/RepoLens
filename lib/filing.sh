@@ -75,6 +75,132 @@ _filing_lock_age() {
   printf '%d' $((now - mtime))
 }
 
+# filing_verify_cluster_citations <project_path> <manifest_entry_json>
+#   Deterministic re-verification of every `path:LINE` (or `path:LSTART-LEND`)
+#   citation embedded in a synthesizer manifest entry's `body` field. This is
+#   the executable counterpart of Step 2 in prompts/_base/file-issue.md and is
+#   intended as the last shell-level guardrail before a cluster can reach
+#   `gh issue create`. Filing callbacks (production or test) may call this
+#   helper to decide whether to write a `.url` or a `VERIFICATION_FAILED:`
+#   `.failed` sentinel.
+#
+#   Citation grammar (extracted from the manifest entry's `body` string):
+#     - `path:LINE`               (single-line citation)
+#     - `path:LSTART-LEND`        (line-range citation; LSTART <= LEND)
+#     - Optionally followed by a backtick-fenced snippet on the same logical
+#       line, e.g. `src/auth.sh:42 — \`return $LOGIN_DENIED\`` — when present,
+#       the snippet text must appear within +/-20 lines of the cited line.
+#
+#   For each citation:
+#     1. The cited file must exist under <project_path>.
+#     2. The cited line (or LSTART..LEND range) must lie within the file's
+#        line count. LSTART > line_count -> MISMATCH "line exceeds file
+#        length".
+#     3. If a backtick snippet is attached, the snippet text must be findable
+#        (substring match) within +/-20 lines of the cited line. Snippet not
+#        found -> MISMATCH "snippet not found near cited line".
+#
+#   On success: returns 0. Prints nothing.
+#   On failure: returns 1. Prints exactly one concise reason line on stdout
+#               of the form `<path>:<line> <description>` so callers can
+#               embed it verbatim after `VERIFICATION_FAILED: `.
+#
+#   If the body contains zero parseable citations the helper treats that as a
+#   verification failure ("no citations to verify"), matching the prompt rule
+#   that an issue must be backed by at least one verified citation.
+filing_verify_cluster_citations() {
+  local project_path="${1:-}"
+  local entry_json="${2:-}"
+  if [[ -z "$project_path" || ! -d "$project_path" ]]; then
+    printf 'project path missing or not a directory: %s\n' "$project_path"
+    return 1
+  fi
+  if [[ -z "$entry_json" ]]; then
+    printf 'manifest entry json is empty\n'
+    return 1
+  fi
+
+  local body
+  body="$(jq -r '.body // empty' <<<"$entry_json" 2>/dev/null)"
+  if [[ -z "$body" ]]; then
+    printf 'manifest entry has no body to verify citations against\n'
+    return 1
+  fi
+
+  # Extract citations of the form `path:N` or `path:N-M`. The path component
+  # accepts letters/digits/_/-/./ slash, must contain at least one '/' or
+  # '.' to avoid trapping things like `step:1`, and the line number must be
+  # numeric. Use a temporary while loop with grep -oE so each match is
+  # processed independently.
+  local citations
+  citations="$(grep -oE '[A-Za-z0-9_./-]+\.[A-Za-z0-9_-]+:[0-9]+(-[0-9]+)?' <<<"$body" \
+    | sort -u)"
+
+  if [[ -z "$citations" ]]; then
+    printf 'no citations found in body\n'
+    return 1
+  fi
+
+  local citation path line_spec lstart lend file_path line_count snippet
+  local snippet_pattern context_start context_end snippet_re
+  while IFS= read -r citation; do
+    [[ -n "$citation" ]] || continue
+    path="${citation%:*}"
+    line_spec="${citation##*:}"
+    if [[ "$line_spec" == *-* ]]; then
+      lstart="${line_spec%-*}"
+      lend="${line_spec#*-}"
+    else
+      lstart="$line_spec"
+      lend="$line_spec"
+    fi
+    if ! [[ "$lstart" =~ ^[0-9]+$ ]] || ! [[ "$lend" =~ ^[0-9]+$ ]]; then
+      printf '%s invalid line spec\n' "$citation"
+      return 1
+    fi
+    if (( lstart < 1 )) || (( lend < lstart )); then
+      printf '%s invalid line range\n' "$citation"
+      return 1
+    fi
+
+    file_path="$project_path/$path"
+    if [[ ! -f "$file_path" ]]; then
+      printf '%s file not found\n' "$citation"
+      return 1
+    fi
+    line_count="$(wc -l <"$file_path" | tr -d ' ')"
+    # Treat a final line without a trailing newline as a real line.
+    if [[ -s "$file_path" ]] && [[ "$(tail -c 1 "$file_path" | od -An -c | tr -d ' ')" != '\n' ]]; then
+      line_count=$((line_count + 1))
+    fi
+    if (( lstart > line_count )) || (( lend > line_count )); then
+      printf '%s line exceeds file length (%d lines)\n' "$citation" "$line_count"
+      return 1
+    fi
+
+    # Optional snippet check: look for a backtick-quoted snippet attached to
+    # this citation on the same logical body line. Use grep on the body so
+    # multi-line bodies are searched line-by-line.
+    snippet="$(grep -F "$citation" <<<"$body" \
+      | grep -oE "\`[^\`]+\`" \
+      | head -1 \
+      | sed -e 's/^`//' -e 's/`$//')"
+    if [[ -n "$snippet" ]]; then
+      context_start=$(( lstart - 20 ))
+      (( context_start < 1 )) && context_start=1
+      context_end=$(( lend + 20 ))
+      (( context_end > line_count )) && context_end=$line_count
+      snippet_pattern="$(sed -n "${context_start},${context_end}p" "$file_path")"
+      if [[ "$snippet_pattern" != *"$snippet"* ]]; then
+        printf '%s snippet not found near cited line\n' "$citation"
+        return 1
+      fi
+    fi
+  done <<< "$citations"
+
+  return 0
+}
+
 # _filing_real_agent <run_id> <cluster_id>
 #   Default per-cluster filing callback: composes the file-issue.md prompt
 #   for the cluster and invokes the active agent. The agent owns the

@@ -345,6 +345,105 @@ validate_manifest() {
   return 0
 }
 
+# validate_manifest_against_verification <manifest_path> <verification_path>
+#   Enforces the B4 -> S2/S4 propagation rule from prompts/_base/synthesize.md:
+#   "Do not emit a cluster whose contributing findings are all WRONG." This
+#   is the deterministic counterpart of the synthesizer prompt's verification
+#   gate — the prompt should obey the rule, this validator is the last line
+#   of defense when an agent ignores it.
+#
+#   Algorithm:
+#     1. Build the WRONG set: every verification entry whose status is WRONG
+#        contributes its `source_finding_path` to a "WRONG-only" set, IFF no
+#        non-WRONG verification entry claims the same path. A single source
+#        finding path can carry several findings (separated by `---`); if at
+#        least one of them is VERIFIED or STALE, the path is not WRONG-only
+#        and a cluster citing it remains legitimate.
+#     2. For every manifest entry, intersect its `source_finding_paths[]`
+#        against the WRONG-only set. If the cluster's path list is non-empty
+#        and EVERY path is WRONG-only, the cluster is leaking a WRONG finding
+#        and the manifest is rejected.
+#
+#   Returns 0 when no WRONG-only cluster is found, 1 on the first violation.
+#   Reports the offending cluster_id and the WRONG-only paths on stderr.
+#   When verification.json is absent or empty, this is a no-op (return 0):
+#   the verifier did not run, so there is nothing to propagate.
+validate_manifest_against_verification() {
+  local manifest="${1:-}"
+  local verification="${2:-}"
+
+  if [[ -z "$manifest" || ! -f "$manifest" ]]; then
+    echo "validate_manifest_against_verification: manifest not found: $manifest" >&2
+    return 2
+  fi
+  if [[ -z "$verification" || ! -f "$verification" ]]; then
+    return 0
+  fi
+
+  if ! jq -e . "$verification" >/dev/null 2>&1; then
+    echo "validate_manifest_against_verification: verification.json is not valid JSON" >&2
+    return 1
+  fi
+
+  local wrong_only_paths
+  wrong_only_paths="$(jq -r '
+    [ .[] | select(.status == "WRONG") | .source_finding_path // empty ] as $wrong
+    | [ .[] | select(.status != "WRONG") | .source_finding_path // empty ] as $notwrong
+    | $wrong
+    | unique
+    | .[]
+    | . as $p
+    | select( ($notwrong | index($p)) == null )
+  ' "$verification" 2>/dev/null)"
+
+  if [[ -z "$wrong_only_paths" ]]; then
+    return 0
+  fi
+
+  # Build a newline-separated set string for fast membership checks via grep.
+  local wrong_set
+  wrong_set="$wrong_only_paths"
+
+  local violations=0 cid path_count wrong_count
+  local cluster_ids cid_list
+  cid_list="$(jq -r '.[] | .cluster_id // "<unnamed>"' "$manifest" 2>/dev/null)"
+  if [[ -z "$cid_list" ]]; then
+    return 0
+  fi
+
+  local i=0
+  while IFS= read -r cid; do
+    [[ -n "$cid" ]] || { i=$((i + 1)); continue; }
+    # Read source_finding_paths for this manifest entry.
+    local paths
+    paths="$(jq -r --argjson i "$i" '.[$i].source_finding_paths[]?' "$manifest" 2>/dev/null)"
+    path_count=0
+    wrong_count=0
+    local p
+    while IFS= read -r p; do
+      [[ -n "$p" ]] || continue
+      path_count=$((path_count + 1))
+      if grep -Fxq -- "$p" <<<"$wrong_set"; then
+        wrong_count=$((wrong_count + 1))
+      fi
+    done <<< "$paths"
+    if (( path_count > 0 )) && (( wrong_count == path_count )); then
+      echo "validate_manifest_against_verification: cluster '$cid' sources are all marked WRONG by the verifier" >&2
+      while IFS= read -r p; do
+        [[ -n "$p" ]] || continue
+        echo "  WRONG source: $p" >&2
+      done <<< "$paths"
+      violations=$((violations + 1))
+    fi
+    i=$((i + 1))
+  done <<< "$cid_list"
+
+  if (( violations > 0 )); then
+    return 1
+  fi
+  return 0
+}
+
 # run_synthesizer <run_id>
 #   Composes the synthesizer prompt, invokes the active agent exactly once,
 #   captures the JSON manifest from stdout, validates it, and atomically
@@ -461,6 +560,16 @@ run_synthesizer() {
   fi
 
   if ! validate_manifest "$candidate"; then
+    rm -f "$candidate"
+    rm -f "$final_dir/manifest.json"
+    return 1
+  fi
+
+  # Last line of defense: even if the synthesizer prompt is bypassed or buggy,
+  # reject any candidate manifest that smuggles a cluster whose contributing
+  # findings were all marked WRONG by the verifier. Absent verification.json
+  # is a no-op.
+  if ! validate_manifest_against_verification "$candidate" "$final_dir/verification.json"; then
     rm -f "$candidate"
     rm -f "$final_dir/manifest.json"
     return 1
