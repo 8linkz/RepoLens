@@ -76,13 +76,18 @@ count_dry_run_issues() {
 
 # Rate-limit / quota / auth-failure signatures emitted by agent CLIs
 # (claude, codex, spark, opencode). Case-insensitive ERE patterns.
-# Extend this list when new agent error strings surface. False positives
-# matter less than false negatives here — a false abort costs one run;
-# a false negative costs a night of wasted iterations.
+# Extend this list when new agent error strings surface. These patterns are
+# intentionally context-aware because agent transcripts can also contain
+# ordinary command output, including issue titles about rate limiting.
 _REPOLENS_RATE_LIMIT_PATTERNS=(
-  "you('|\xe2\x80\x99)?ve hit your usage limit"
-  "usage limit"
-  "rate[- ]?limit(ed|ing|s)?"
+  "you('|’)?ve hit your usage limit"
+  "usage limit (exceeded|reached|hit)"
+  "(error|fatal|failed|failure|exception|http|api|request|provider|claude|codex|opencode|spark)[^[:alnum:]_].*rate[- ]?limit(ed|ing|s)?"
+  "rate[- ]?limit(ed|ing|s)?([^[:alnum:]_]|$).*(exceeded|reached|hit|retry-after|try again|until)"
+  "http[ /]*(1\\.[01][[:space:]]*)?429"
+  "rate[[:space:]-]*limit[[:space:]-]*exceeded"
+  "secondary rate[- ]?limit"
+  "ratelimiterror"
   "try again (at|in)"
   "quota exceeded"
   "401 unauthorized"
@@ -108,7 +113,7 @@ detect_agent_rate_limit() {
   [[ -s "$file" ]] || return 1
 
   local stripped pat line
-  stripped="$(strip_ansi < "$file" 2>/dev/null)"
+  stripped="$(strip_ansi < "$file" 2>/dev/null | grep -viE '^[[:space:]]*[0-9]+[[:space:]]+(OPEN|CLOSED)[[:space:]]' || true)"
   [[ -n "$stripped" ]] || return 1
 
   for pat in "${_REPOLENS_RATE_LIMIT_PATTERNS[@]}"; do
