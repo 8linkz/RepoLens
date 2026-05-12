@@ -1,0 +1,26 @@
+[INFO] [<TIMESTAMP>] RepoLens run <RUN_ID> starting
+[INFO] [<TIMESTAMP>] Project: <TMP_RUN_DIR>/<PROJECT_TAIL> (local/<PROJECT_TAIL>)
+[INFO] [<TIMESTAMP>] Agent: codex | Mode: audit | Parallel: false
+[INFO] [<TIMESTAMP>] Agent timeout: 600s
+[INFO] [<TIMESTAMP>] Agent timeout kill grace: 30s
+[INFO] [<TIMESTAMP>] Local mode: writing local markdown files to <TMP_RUN_DIR>/issues-audit
+[INFO] [<TIMESTAMP>] Resolved 1 lens(es) to run
+
+=== Dry Run ===
+Mode:         audit
+Agent:        codex
+Project:      <TMP_RUN_DIR>/<PROJECT_TAIL>
+Rounds:      1
+Lenses:       1
+Output:       local markdown (<TMP_RUN_DIR>/issues-audit)
+
+Estimated cost: ~$0.43  (lens_count=1 x depth=3 x rounds=1, lower bound — real runs typically 2-5x higher)
+  model:      GPT-5 (Codex)  —  $1.25 in / $10.00 out per MTok
+  repo:       ~0 source tokens  (input capped at 200k/session)
+  per session: ~$0.0838  (~3000 in + 8000 out tokens)
+  sessions:   1 lenses x ~5.1 iterations (streak 3 x 1.7 iter-factor) x 1 round(s)
+
+Lenses that would run:
+  security/injection
+
+Dry run complete — no agents were executed.
