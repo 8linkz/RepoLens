@@ -200,13 +200,13 @@ assert_contains "default run_meta_orchestrator logs real handoff" \
                 "$(join_by " " "${LOG_LINES[@]}")"
 assert_contains "default dispatch contains validated lens" \
                 "LENS: injection" \
-                "$(cat "$LOG_BASE/rounds/round-8/dispatch.md")"
+                "$(cat "$LOG_BASE/rounds/round-7/dispatch.md")"
 assert_contains "default dispatch contains custom category" \
                 "CUSTOM: auth-followup" \
-                "$(cat "$LOG_BASE/rounds/round-8/dispatch.md")"
+                "$(cat "$LOG_BASE/rounds/round-7/dispatch.md")"
 assert_contains "default hypotheses file contains extracted block" \
                 "Verify the selected follow-up angle." \
-                "$(cat "$LOG_BASE/rounds/round-8/hypotheses.md")"
+                "$(cat "$LOG_BASE/rounds/round-7/hypotheses.md")"
 
 reset_case() {
   local name="$1"

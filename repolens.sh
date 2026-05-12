@@ -50,6 +50,8 @@ source "$SCRIPT_DIR/lib/verify.sh"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/triage.sh"
 # shellcheck source=/dev/null
+source "$SCRIPT_DIR/lib/synthesize.sh"
+# shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/hosted.sh"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/android.sh"
@@ -2138,6 +2140,20 @@ if [[ "$RUN_ROUNDS_RC" -eq 0 && "${NO_VERIFIER:-true}" != "true" ]]; then
     log_info "Verifier: verification.json promoted"
   else
     log_warn "Verifier: failed — synthesizer will proceed without verification filtering"
+  fi
+fi
+
+# --- Synthesizer (post-rounds, post-verifier) ---
+# Multi-round runs finish by consolidating round findings into a schema-checked
+# manifest under logs/<run-id>/final/manifest.json. Single-round runs keep the
+# legacy direct-filing/local-output behavior.
+if [[ "$RUN_ROUNDS_RC" -eq 0 && "${ROUNDS:-1}" -gt 1 ]]; then
+  log_info "Synthesizer: consolidating multi-round findings"
+  if run_synthesizer "$RUN_ID"; then
+    log_info "Synthesizer: manifest.json promoted"
+  else
+    log_warn "Synthesizer: failed to produce a valid manifest"
+    RUN_ROUNDS_RC=1
   fi
 fi
 

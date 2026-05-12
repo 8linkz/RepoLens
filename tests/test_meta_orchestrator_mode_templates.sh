@@ -126,7 +126,7 @@ render_meta_prompt_for_mode() {
   printf '%s\n' "# Round Digest" "Prior output for $mode." > "$LOG_BASE/rounds/round-1/digest.md"
 
   run_meta_orchestrator 1 2 >/dev/null
-  cat "$LOG_BASE/rounds/round-2/meta-orchestrator-prompt.md"
+  cat "$LOG_BASE/rounds/round-1/meta-orchestrator-prompt.md"
 }
 
 echo "=== meta-orchestrator mode templates (issue #158) ==="

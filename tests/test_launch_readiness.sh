@@ -452,29 +452,35 @@ echo "--- Section 8: Repository metadata (via gh CLI) ---"
 echo ""
 
 if command -v gh &>/dev/null; then
-  repo_json="$(gh repo view --json description,homepageUrl 2>/dev/null || echo '{}')"
-
-  echo "Test 31: Repo description is non-empty"
-  TOTAL=$((TOTAL + 1))
-  repo_desc="$(echo "$repo_json" | jq -r '.description // ""' 2>/dev/null)"
-  if [[ -n "$repo_desc" && "$repo_desc" != "null" ]]; then
-    PASS=$((PASS + 1))
-    echo "  PASS: repo description is set: $repo_desc"
-  else
-    FAIL=$((FAIL + 1))
-    echo "  FAIL: repo description is empty"
+  if ! repo_json="$(gh repo view TheMorpheus407/RepoLens --json description,homepageUrl 2>/dev/null)"; then
+    echo "Test 31: SKIP — gh CLI could not read public repo metadata"
+    echo "Test 32: SKIP — gh CLI could not read public repo metadata"
+    repo_json=""
   fi
 
-  echo ""
-  echo "Test 32: Repo homepage URL is set"
-  TOTAL=$((TOTAL + 1))
-  repo_homepage="$(echo "$repo_json" | jq -r '.homepageUrl // ""' 2>/dev/null)"
-  if [[ -n "$repo_homepage" && "$repo_homepage" != "null" ]]; then
-    PASS=$((PASS + 1))
-    echo "  PASS: repo homepage URL is set: $repo_homepage"
-  else
-    FAIL=$((FAIL + 1))
-    echo "  FAIL: repo homepage URL is empty"
+  if [[ -n "$repo_json" ]]; then
+    echo "Test 31: Repo description is non-empty"
+    TOTAL=$((TOTAL + 1))
+    repo_desc="$(echo "$repo_json" | jq -r '.description // ""' 2>/dev/null)"
+    if [[ -n "$repo_desc" && "$repo_desc" != "null" ]]; then
+      PASS=$((PASS + 1))
+      echo "  PASS: repo description is set: $repo_desc"
+    else
+      FAIL=$((FAIL + 1))
+      echo "  FAIL: repo description is empty"
+    fi
+
+    echo ""
+    echo "Test 32: Repo homepage URL is set"
+    TOTAL=$((TOTAL + 1))
+    repo_homepage="$(echo "$repo_json" | jq -r '.homepageUrl // ""' 2>/dev/null)"
+    if [[ -n "$repo_homepage" && "$repo_homepage" != "null" ]]; then
+      PASS=$((PASS + 1))
+      echo "  PASS: repo homepage URL is set: $repo_homepage"
+    else
+      FAIL=$((FAIL + 1))
+      echo "  FAIL: repo homepage URL is empty"
+    fi
   fi
 else
   echo "Test 31: SKIP — gh CLI not available, cannot check repo description"

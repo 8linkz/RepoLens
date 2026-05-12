@@ -71,6 +71,12 @@ round_digest_path() {
   printf '%s/digest.md' "$dir"
 }
 
+round_prior_digest_path() {
+  local run_id="${1:-}" round_number="${2:-}" dir
+  dir="$(round_dir "$run_id" "$round_number")" || return $?
+  printf '%s/prior-round-digest.md' "$dir"
+}
+
 round_hypotheses_path() {
   local run_id="${1:-}" round_number="${2:-}" dir
   dir="$(round_dir "$run_id" "$round_number")" || return $?
@@ -357,16 +363,16 @@ run_meta_orchestrator() {
 
   repo_root="$(_rounds_repo_root)"
   digest_path="$prev_round_dir/digest.md"
-  dispatch_path="$next_round_dir/dispatch.md"
-  hypotheses_path="$next_round_dir/hypotheses.md"
-  prompt_path="$next_round_dir/meta-orchestrator-prompt.md"
-  output_path="$next_round_dir/meta-orchestrator-output.txt"
+  dispatch_path="$prev_round_dir/dispatch.md"
+  hypotheses_path="$prev_round_dir/hypotheses.md"
+  prompt_path="$prev_round_dir/meta-orchestrator-prompt.md"
+  output_path="$prev_round_dir/meta-orchestrator-output.txt"
   template_name="$(_rounds_meta_template_name_for_mode "${MODE:-}")"
   template_file="${BASE_PROMPTS_DIR:-$repo_root/prompts/_base}/$template_name"
   project_path="${PROJECT_PATH:-$repo_root}"
 
-  if ! mkdir -p "$next_round_dir"; then
-    _rounds_meta_warn "Unable to create next round directory for meta-orchestrator: $next_round_dir"
+  if ! mkdir -p "$prev_round_dir" "$next_round_dir"; then
+    _rounds_meta_warn "Unable to create round directory for meta-orchestrator handoff"
     return 1
   fi
   if [[ ! -f "$template_file" ]]; then
@@ -1263,13 +1269,47 @@ _rounds_record_skipped_lenses() {
   done
 }
 
+_rounds_build_prior_digest_context() {
+  local run_id="$1" current_round="$2"
+  local prior_digest context_path context_dir previous_round digest_path
+
+  if (( current_round <= 1 )); then
+    return 2
+  fi
+
+  if (( current_round == 2 )); then
+    prior_digest="$(round_digest_path "$run_id" 1)" || return $?
+    [[ -f "$prior_digest" ]] || return 1
+    printf '%s' "$prior_digest"
+    return 0
+  fi
+
+  context_path="$(round_prior_digest_path "$run_id" "$current_round")" || return $?
+  context_dir="${context_path%/*}"
+  mkdir -p "$context_dir" || return 1
+
+  : > "$context_path" || return 1
+  for previous_round in $(seq 1 "$((current_round - 1))"); do
+    digest_path="$(round_digest_path "$run_id" "$previous_round")" || return $?
+    [[ -f "$digest_path" ]] || continue
+    {
+      printf '# Prior Round %s Digest\n\n' "$previous_round"
+      cat "$digest_path"
+      printf '\n\n'
+    } >> "$context_path" || return 1
+  done
+
+  [[ -s "$context_path" ]] || return 1
+  printf '%s' "$context_path"
+}
+
 run_rounds() {
   local rounds_total="$1" lens_list_var="$2"
   local -a lens_list=() active_lens_list=()
   local round lens_entry parallel_count local_count lens_total
   local original_completed_lenses_file had_completed_lenses_file
   local round_completed_lenses_file round_completed_lenses_dir round_rc
-  local current_round_dir previous_digest_path previous_hypotheses_path current_hypotheses_path
+  local current_round_dir prior_digest_path previous_hypotheses_path current_hypotheses_path
   local dispatch_path dispatched_lenses_output dispatched_custom_output
   local round_custom_lenses_dir dispatch_has_entries
 
@@ -1297,10 +1337,15 @@ run_rounds() {
     fi
 
     if (( rounds_total > 1 )); then
-      dispatch_path="$current_round_dir/dispatch.md"
-      if [[ -f "$dispatch_path" ]]; then
+      dispatch_path=""
+      if (( round > 1 )); then
+        local previous_round_dir
+        previous_round_dir="$(round_dir "${RUN_ID:-}" "$((round - 1))")" || return $?
+        dispatch_path="$previous_round_dir/dispatch.md"
+      fi
+      if [[ -n "$dispatch_path" && -f "$dispatch_path" ]]; then
         dispatched_lenses_output="$(_rounds_meta_dispatch_lens_entries "$dispatch_path")"
-        round_custom_lenses_dir="$current_round_dir/custom-lenses"
+        round_custom_lenses_dir="${dispatch_path%/*}/custom-lenses"
         dispatched_custom_output="$(_rounds_meta_dispatch_custom_entries "$dispatch_path" "$round_custom_lenses_dir")"
         if _rounds_meta_dispatch_has_entries "$dispatch_path"; then
           dispatch_has_entries=1
@@ -1358,10 +1403,9 @@ run_rounds() {
       fi
 
       if (( round > 1 )); then
-        previous_digest_path="$(round_digest_path "${RUN_ID:-}" "$((round - 1))")" || return $?
         previous_hypotheses_path="$(round_hypotheses_path "${RUN_ID:-}" "$((round - 1))")" || return $?
         current_hypotheses_path="$(round_hypotheses_path "${RUN_ID:-}" "$round")" || return $?
-        [[ -f "$previous_digest_path" ]] && PRIOR_ROUND_DIGEST_FILE="$previous_digest_path"
+        prior_digest_path="$(_rounds_build_prior_digest_context "${RUN_ID:-}" "$round")" && PRIOR_ROUND_DIGEST_FILE="$prior_digest_path"
         if [[ -f "$current_hypotheses_path" ]]; then
           HYPOTHESES_TO_VERIFY_FILE="$current_hypotheses_path"
         elif [[ -f "$previous_hypotheses_path" ]]; then

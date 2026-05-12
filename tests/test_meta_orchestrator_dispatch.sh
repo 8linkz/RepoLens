@@ -276,8 +276,8 @@ run_meta_orchestrator 1 2
 rc=$?
 assert_eq "run_meta_orchestrator returns saturation status" "2" "$rc"
 assert_eq "run_meta_orchestrator invokes agent once" "1" "$RUN_AGENT_COUNT"
-assert_contains "saturation dispatch records token" "NO_FRESH_ANGLES" "$(cat "$LOG_BASE/rounds/round-2/dispatch.md")"
-if [[ -f "$LOG_BASE/rounds/round-2/hypotheses.md" ]]; then
+assert_contains "saturation dispatch records token" "NO_FRESH_ANGLES" "$(cat "$LOG_BASE/rounds/round-1/dispatch.md")"
+if [[ -f "$LOG_BASE/rounds/round-1/hypotheses.md" ]]; then
   hypotheses_state="present"
 else
   hypotheses_state="missing"
@@ -285,12 +285,12 @@ fi
 assert_eq "saturation hypotheses artifact exists" "present" "$hypotheses_state"
 
 echo ""
-echo "Test 4: run_rounds uses next-round dispatch lens directives"
+echo "Test 4: run_rounds uses previous-round dispatch lens directives"
 RUN_ID="dispatch-run"
 LOG_BASE="$TMPDIR/dispatch-logs"
 SUMMARY_FILE="$TMPDIR/dispatch-summary.json"
-mkdir -p "$LOG_BASE/rounds/round-2"
-printf '%s\n' 'LENS: injection' > "$LOG_BASE/rounds/round-2/dispatch.md"
+mkdir -p "$LOG_BASE/rounds/round-1"
+printf '%s\n' 'LENS: injection' > "$LOG_BASE/rounds/round-1/dispatch.md"
 printf '{"stopped_reason":null,"lenses":[]}\n' > "$SUMMARY_FILE"
 PARALLEL=false
 LOCAL_MODE=true
@@ -325,8 +325,8 @@ echo "Test 5: run_rounds honors custom-only dispatches"
 RUN_ID="custom-dispatch-run"
 LOG_BASE="$TMPDIR/custom-dispatch-logs"
 SUMMARY_FILE="$TMPDIR/custom-dispatch-summary.json"
-mkdir -p "$LOG_BASE/rounds/round-2"
-cat > "$LOG_BASE/rounds/round-2/dispatch.md" <<'EOF'
+mkdir -p "$LOG_BASE/rounds/round-1"
+cat > "$LOG_BASE/rounds/round-1/dispatch.md" <<'EOF'
 # Meta-Orchestrator Dispatch
 
 CUSTOM: risk review - `lib/example.sh:20`; custom category with rationale.
@@ -354,7 +354,7 @@ assert_eq "round 2 runs only generated custom lens" \
 assert_contains "custom-only dispatch handoff is logged" \
                 "Using meta-orchestrator dispatch (1 lens(es))" \
                 "${LOG_LINES[*]}"
-custom_lens_file="$LOG_BASE/rounds/round-2/custom-lenses/custom/risk-review.md"
+custom_lens_file="$LOG_BASE/rounds/round-1/custom-lenses/custom/risk-review.md"
 if [[ -f "$custom_lens_file" ]]; then
   custom_lens_state="present"
 else

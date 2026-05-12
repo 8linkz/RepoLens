@@ -20,7 +20,7 @@
 #     round-2 lenses re-run, round-2 marker written, round-3 fresh.
 #  2. Fully-completed round-1 marker (plus its lens completion file) causes
 #     round-1 to be skipped entirely with zero run_lens calls.
-#  3. Pre-existing round-N/dispatch.md with zero lens-outputs causes lens
+#  3. Pre-existing round-(N-1)/dispatch.md with zero lens-outputs causes lens
 #     dispatch to run from dispatch.md WITHOUT invoking the meta-orchestrator
 #     for that round.
 #  4. `--resume <run-id>` with a `--rounds N` value that differs from the
@@ -287,9 +287,10 @@ init_run_layout "$RUN_ID" 2 "${#LENSES3[@]}" "${LENSES3[@]}"
 finalize_round "$RUN_ID" 1
 mkdir -p "$LOG_BASE/.rounds"
 printf '%s\n' "${LENSES3[@]}" > "$LOG_BASE/.rounds/round-1.lenses.completed"
-# Round 2 dispatch was written by the prior run; zero lens outputs yet.
-mkdir -p "$LOG_BASE/rounds/round-2"
-cat > "$LOG_BASE/rounds/round-2/dispatch.md" <<'DISPATCH'
+# Round 2 dispatch was written at the end of round 1 by the prior run; zero
+# round-2 lens outputs exist yet.
+mkdir -p "$LOG_BASE/rounds/round-1"
+cat > "$LOG_BASE/rounds/round-1/dispatch.md" <<'DISPATCH'
 # Meta-Orchestrator Dispatch
 
 LENS: injection

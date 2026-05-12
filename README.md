@@ -556,8 +556,8 @@ Completed lenses are skipped. The run ID is printed at startup and found in `log
 
 - **Remote Issues** — Created directly in the target repo with severity-prefixed titles and domain labels (default)
 - **Local Markdown** — With `--local`, findings are written as individual markdown files to `<output-dir>/<domain>/<lens-id>/NNN-slug.md` with YAML frontmatter (title, severity, domain, lens, labels). Default output directory: `logs/<run-id>/rounds/round-1/lens-outputs/`
-- **Round Artifacts** — Every run creates `logs/<run-id>/rounds/round-N/` for each resolved round, including `metadata.json` and `lens-outputs/`. `round-N/.completed` appears only after that round finishes cleanly. Future round orchestration writes `digest.md` there
-- **Final Artifacts** — Every run creates `logs/<run-id>/final/` and `logs/<run-id>/final/filed/`; future synthesis writes the final manifest, reasoning, and filed issue links there
+- **Round Artifacts** — Every run creates `logs/<run-id>/rounds/round-N/` for each resolved round, including `metadata.json`, `lens-outputs/`, and `digest.md`. `round-N/.completed` appears only after that round finishes cleanly. Multi-round runs write between-round `dispatch.md` handoff files on completed rounds before the final round
+- **Final Artifacts** — Every run creates `logs/<run-id>/final/` and `logs/<run-id>/final/filed/`. Successful multi-round runs promote a schema-validated `logs/<run-id>/final/manifest.json`; later filing stages record filed issue links under `final/filed/`
 - **Logs** — `logs/<run-id>/<domain>/<lens>/iteration-N-TIMESTAMP.txt`
 - **Heartbeats** — Active lenses write `logs/<run-id>/.heartbeat/<domain>__<lens-id>.json`; files are removed after clean lens completion and left behind if a worker exits abnormally
 - **Status** — `logs/<run-id>/status.json`, refreshed during the run with queued, active, completed, issue-count, completion-percentage, and final-state data; render it with `./repolens.sh status [run-id]`
