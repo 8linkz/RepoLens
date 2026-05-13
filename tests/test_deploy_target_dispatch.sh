@@ -23,18 +23,17 @@
 #   2. Deploy mode classifies the target before resolving lenses:
 #      - Auto (default) with no APK and no Android markers     -> server target
 #      - Auto with an existing APK in the project              -> android target
-#      - Auto with Android source markers (build.gradle / kts) but no APK
-#        -> server fallback, NEVER silently builds (trust boundary).
+#      - Dry-run auto with Android source markers (build.gradle / kts) but
+#        no APK -> server fallback, NEVER asks the build helper to run.
 #      - Direct path to an .apk file via --project              -> android target
 #
 #   3. Domain exclusivity: a deploy run resolves only the deployment lens
 #      family OR only the android lens family, never both.
 #
-#   4. Trust boundary: in auto mode, NO target-controlled `gradlew`,
-#      `gradle`, or other build tooling is ever executed. Auto must accept
-#      a discovered/direct APK or fall back to server. Source builds, if
-#      retained at all, require an explicit per-run opt-in (i.e. they are
-#      not implied by --yes, --auto, or `auto`).
+#   4. Trust boundary: dry-run auto mode never invokes build helpers or
+#      target-controlled `gradlew`, `gradle`, or other build tooling.
+#      Non-dry deploy mode also requires --build-android-apk before any
+#      source build helper may run; --yes alone is not enough.
 #
 #   5. Once an Android target is resolved, repolens.sh exports and
 #      substitutes TARGET_TYPE, ANDROID_APK_PATH, ANDROID_PACKAGE_NAME,
@@ -163,6 +162,8 @@ cat > "$ANDROID_SRC_DIR/build.gradle" <<'EOF'
 android { compileSdkVersion 34 }
 EOF
 GRADLEW_SENTINEL="$TMPDIR/gradlew_was_executed.txt"
+BUILD_HELPER_SENTINEL="$TMPDIR/build_helper_was_called.txt"
+BASH_ENV_HELPER="$TMPDIR/build-helper.bashenv"
 cat > "$ANDROID_SRC_DIR/gradlew" <<EOF
 #!/usr/bin/env bash
 # Booby-trapped fake gradlew. If repolens.sh invokes it during auto-mode
@@ -172,6 +173,31 @@ echo "MALICIOUS GRADLEW EXECUTED at \$(date -u)" > "$GRADLEW_SENTINEL"
 exit 0
 EOF
 chmod +x "$ANDROID_SRC_DIR/gradlew"
+cat > "$BASH_ENV_HELPER" <<EOF
+build_android_apk() {
+  echo "\$1" >> "$BUILD_HELPER_SENTINEL"
+  printf '%s\n' "\$1/app/build/outputs/apk/debug/app-debug.apk"
+}
+EOF
+
+# Marker-only Android source projects used to prove deploy source-build
+# dispatch follows lib/android.sh's classifier instead of checking only root
+# Gradle files.
+GRADLEW_ONLY_DIR="$TMPDIR/gradlew-only"
+mkdir -p "$GRADLEW_ONLY_DIR"
+GRADLEW_ONLY_SENTINEL="$TMPDIR/gradlew_only_was_executed.txt"
+cat > "$GRADLEW_ONLY_DIR/gradlew" <<EOF
+#!/usr/bin/env bash
+echo "GRADLEW-ONLY EXECUTED at \$(date -u)" > "$GRADLEW_ONLY_SENTINEL"
+exit 0
+EOF
+chmod +x "$GRADLEW_ONLY_DIR/gradlew"
+
+APP_BUILD_ONLY_DIR="$TMPDIR/app-build-only"
+mkdir -p "$APP_BUILD_ONLY_DIR/app"
+cat > "$APP_BUILD_ONLY_DIR/app/build.gradle" <<'EOF'
+android { compileSdkVersion 34 }
+EOF
 
 # Android project with a discoverable APK in the standard Gradle output path.
 ANDROID_APK_DIR="$TMPDIR/android-apk"
@@ -195,6 +221,24 @@ run_dry_deploy() {
     --mode deploy \
     --local \
     --dry-run \
+    --yes \
+    "$@" \
+    >"$log_file" 2>&1
+  local rc=$?
+  set -e
+  record_run_id "$log_file"
+  return "$rc"
+}
+
+run_deploy() {
+  local project="$1" log_file="$2"
+  shift 2
+  set +e
+  bash "$REPOLENS" \
+    --project "$project" \
+    --agent claude \
+    --mode deploy \
+    --local \
     --yes \
     "$@" \
     >"$log_file" 2>&1
@@ -294,32 +338,105 @@ assert_not_contains "APK-bearing project does NOT resolve any deployment/* lens"
 assert_contains "APK-bearing project reaches the dry-run output marker" "Dry run complete" "$out4"
 
 # ===========================================================================
-# Test 5 (TRUST BOUNDARY): a Gradle source tree with a booby-trapped gradlew
-# must never have that gradlew executed during classification.
+# Test 5 (TRUST BOUNDARY): dry-run source classification never asks a build
+# helper to run and never executes a booby-trapped gradlew.
 # ===========================================================================
-# This is the central safety property from issue #189: auto-classification
-# of an Android-source-looking tree must not execute project-controlled
-# build tooling directly. repolens.sh may call a `build_android_apk` helper
-# (#187) when one is present, but the helper — not repolens.sh — owns the
-# authorization / confirm / dry-run gating. The load-bearing invariant here
-# is that the malicious gradlew sentinel never appears.
-#
-# Target-type is intentionally not asserted: today (no build_android_apk
-# helper merged yet) classification falls back to server; once #187 lands,
-# the same source tree will legitimately resolve to android. Either outcome
-# is acceptable as long as the sentinel stays absent.
+# This is the central dry-run safety property for issue #187: once
+# lib/android.sh defines build_android_apk, deploy dry-run must still be a
+# read-only classification path. The BASH_ENV helper sentinel proves
+# repolens.sh did not ask the helper to build; the gradlew sentinel proves no
+# target-controlled wrapper ran.
 echo ""
-echo "Test 5 (TRUST BOUNDARY): auto mode must not execute project-controlled gradlew"
+echo "Test 5 (TRUST BOUNDARY): dry-run must not invoke build helper or gradlew"
 LOG5="$TMPDIR/run5.log"
-rm -f "$GRADLEW_SENTINEL"
+rm -f "$GRADLEW_SENTINEL" "$BUILD_HELPER_SENTINEL"
+_old_bash_env="${BASH_ENV-}"
+_old_bash_env_set="${BASH_ENV+x}"
+export BASH_ENV="$BASH_ENV_HELPER"
 run_dry_deploy "$ANDROID_SRC_DIR" "$LOG5" || true
+if [[ -n "$_old_bash_env_set" ]]; then
+  export BASH_ENV="$_old_bash_env"
+else
+  unset BASH_ENV
+fi
+unset _old_bash_env _old_bash_env_set
 out5="$(cat "$LOG5")"
 
-assert_file_absent "trust boundary: gradlew was NOT executed during classification" "$GRADLEW_SENTINEL"
+assert_file_absent "trust boundary: build helper was NOT invoked during dry-run" "$BUILD_HELPER_SENTINEL"
+assert_file_absent "trust boundary: gradlew was NOT executed during dry-run" "$GRADLEW_SENTINEL"
 assert_contains "trust boundary: dry-run completes cleanly" "Dry run complete" "$out5"
 
+echo ""
+echo "Test 5b (TRUST BOUNDARY): dry-run with build opt-in is still read-only"
+LOG5B="$TMPDIR/run5b.log"
+rm -f "$GRADLEW_SENTINEL" "$BUILD_HELPER_SENTINEL"
+_old_bash_env="${BASH_ENV-}"
+_old_bash_env_set="${BASH_ENV+x}"
+export BASH_ENV="$BASH_ENV_HELPER"
+run_dry_deploy "$ANDROID_SRC_DIR" "$LOG5B" --build-android-apk || true
+if [[ -n "$_old_bash_env_set" ]]; then
+  export BASH_ENV="$_old_bash_env"
+else
+  unset BASH_ENV
+fi
+unset _old_bash_env _old_bash_env_set
+out5b="$(cat "$LOG5B")"
+
+assert_file_absent "dry-run opt-in: build helper was NOT invoked" "$BUILD_HELPER_SENTINEL"
+assert_file_absent "dry-run opt-in: gradlew was NOT executed" "$GRADLEW_SENTINEL"
+assert_contains "dry-run opt-in: run completes cleanly" "Dry run complete" "$out5b"
+
 # ===========================================================================
-# Test 6: a direct .apk file path as --project is accepted as Android target
+# Test 6 (TRUST BOUNDARY): non-dry source projects require explicit build opt-in
+# ===========================================================================
+echo ""
+echo "Test 6 (TRUST BOUNDARY): --yes alone does not authorize source builds"
+LOG6A="$TMPDIR/run6a.log"
+LOG6B="$TMPDIR/run6b.log"
+rm -f "$BUILD_HELPER_SENTINEL" "$GRADLEW_ONLY_SENTINEL"
+_old_bash_env="${BASH_ENV-}"
+_old_bash_env_set="${BASH_ENV+x}"
+export BASH_ENV="$BASH_ENV_HELPER"
+run_deploy "$GRADLEW_ONLY_DIR" "$LOG6A" --focus "__repolens_missing_lens__" || true
+run_deploy "$APP_BUILD_ONLY_DIR" "$LOG6B" --focus "__repolens_missing_lens__" || true
+if [[ -n "$_old_bash_env_set" ]]; then
+  export BASH_ENV="$_old_bash_env"
+else
+  unset BASH_ENV
+fi
+unset _old_bash_env _old_bash_env_set
+out6a="$(cat "$LOG6A")"
+out6b="$(cat "$LOG6B")"
+
+assert_file_absent "non-dry gradlew-only project: build helper was NOT invoked without opt-in" "$BUILD_HELPER_SENTINEL"
+assert_file_absent "non-dry gradlew-only project: gradlew was NOT executed without opt-in" "$GRADLEW_ONLY_SENTINEL"
+assert_contains "non-dry gradlew-only project: run reached lens resolution" "not found" "$out6a"
+assert_contains "non-dry app/build.gradle project: run reached lens resolution" "not found" "$out6b"
+
+echo ""
+echo "Test 6b: explicit build opt-in uses buildable markers without running fixture gradlew"
+LOG6C="$TMPDIR/run6c.log"
+LOG6D="$TMPDIR/run6d.log"
+rm -f "$BUILD_HELPER_SENTINEL" "$GRADLEW_ONLY_SENTINEL"
+_old_bash_env="${BASH_ENV-}"
+_old_bash_env_set="${BASH_ENV+x}"
+export BASH_ENV="$BASH_ENV_HELPER"
+run_deploy "$GRADLEW_ONLY_DIR" "$LOG6C" --build-android-apk --focus "__repolens_missing_lens__" || true
+run_deploy "$APP_BUILD_ONLY_DIR" "$LOG6D" --build-android-apk --focus "__repolens_missing_lens__" || true
+if [[ -n "$_old_bash_env_set" ]]; then
+  export BASH_ENV="$_old_bash_env"
+else
+  unset BASH_ENV
+fi
+unset _old_bash_env _old_bash_env_set
+helper_calls="$(cat "$BUILD_HELPER_SENTINEL" 2>/dev/null || true)"
+
+assert_contains "opt-in gradlew-only project: build helper called through classifier" "$GRADLEW_ONLY_DIR" "$helper_calls"
+assert_contains "opt-in app/build.gradle project: build helper called through classifier" "$APP_BUILD_ONLY_DIR" "$helper_calls"
+assert_file_absent "opt-in test helper did not execute project gradlew fixture" "$GRADLEW_ONLY_SENTINEL"
+
+# ===========================================================================
+# Test 7: a direct .apk file path as --project is accepted as Android target
 # ===========================================================================
 # Today repolens.sh dies with "Cannot access project path: ..." when --project
 # points at a file (because it cd's into PROJECT_PATH). #88 says an APK target
@@ -327,15 +444,15 @@ assert_contains "trust boundary: dry-run completes cleanly" "Dry run complete" "
 # the implementer routed file inputs into the Android target classifier
 # rather than rejecting them at directory-normalization time.
 echo ""
-echo "Test 6: direct .apk path as --project is accepted and dispatches to android"
-LOG6="$TMPDIR/run6.log"
-run_dry_deploy "$DIRECT_APK" "$LOG6" || true
-out6="$(cat "$LOG6")"
+echo "Test 7: direct .apk path as --project is accepted and dispatches to android"
+LOG7="$TMPDIR/run7.log"
+run_dry_deploy "$DIRECT_APK" "$LOG7" || true
+out7="$(cat "$LOG7")"
 
-assert_not_contains "direct APK path is not rejected as a missing project" "Cannot access project path" "$out6"
-assert_not_contains "direct APK path is not rejected as a non-git repo" "Not a git repository" "$out6"
-assert_contains "direct APK path resolves android/* lenses" "android/" "$out6"
-assert_not_contains "direct APK path does NOT resolve deployment/* lenses" "deployment/" "$out6"
+assert_not_contains "direct APK path is not rejected as a missing project" "Cannot access project path" "$out7"
+assert_not_contains "direct APK path is not rejected as a non-git repo" "Not a git repository" "$out7"
+assert_contains "direct APK path resolves android/* lenses" "android/" "$out7"
+assert_not_contains "direct APK path does NOT resolve deployment/* lenses" "deployment/" "$out7"
 
 # ===========================================================================
 # Summary

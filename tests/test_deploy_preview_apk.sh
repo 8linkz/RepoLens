@@ -361,7 +361,7 @@ if [[ "$HAVE_SCRIPT" -eq 1 ]]; then
   _old_bash_env_set="${BASH_ENV+x}"
   export BASH_ENV="$BASH_ENV_HELPER"
   export REPOLENS_FAKE_BUILT_APK="$BUILT_APK_PATH"
-  run_deploy_with_pty_to_file "$BUILD_SOURCE_DIR" "$LOG5" || true
+  run_deploy_with_pty_to_file "$BUILD_SOURCE_DIR" "$LOG5" --build-android-apk || true
   if [[ -n "$_old_bash_env_set" ]]; then
     export BASH_ENV="$_old_bash_env"
   else

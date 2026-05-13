@@ -60,6 +60,21 @@ _android_log_display_path() {
   printf '%s' "$1" | LC_ALL=C tr '\000-\037\177' '?'
 }
 
+# android_project_appears_buildable <project_path>
+#   Returns success when the project has shallow Android/Gradle build markers.
+android_project_appears_buildable() {
+  local project_path="${1:-}"
+
+  [[ -n "$project_path" ]] || return 1
+  [[ -d "$project_path" ]] || return 1
+
+  [[ -f "$project_path/gradlew" ]] ||
+    [[ -f "$project_path/build.gradle" ]] ||
+    [[ -f "$project_path/build.gradle.kts" ]] ||
+    [[ -f "$project_path/app/build.gradle" ]] ||
+    [[ -f "$project_path/app/build.gradle.kts" ]]
+}
+
 # discover_android_apk <project_path>
 #   Prints the newest discovered APK path. Returns 1 quietly when none exists.
 discover_android_apk() {
@@ -84,3 +99,27 @@ discover_android_apk() {
   fi
   printf '%s\n' "$apk_path"
 }
+
+if ! declare -F build_android_apk >/dev/null 2>&1; then
+  # build_android_apk <project_path>
+  #   Runs the project-local Gradle wrapper debug build, then prints the APK path.
+  build_android_apk() {
+    local project_path="${1:-}"
+    local apk_path
+
+    [[ -n "$project_path" ]] || return 1
+    project_path="$(cd "$project_path" 2>/dev/null && pwd)" || return 1
+
+    (
+      cd "$project_path" || exit 1
+      ./gradlew assembleDebug 1>&2
+    ) || return $?
+
+    if ! apk_path="$(discover_android_apk "$project_path")"; then
+      printf '%s\n' "assembleDebug succeeded but no APK was discovered" >&2
+      return 1
+    fi
+
+    printf '%s\n' "$apk_path"
+  }
+fi

@@ -136,6 +136,7 @@ Options:
   --output <path>         Output directory for local markdown files (requires --local, default: logs/<run-id>/issues/)
   --forge <provider>      gh (GitHub) | tea (Gitea) | fj (Forgejo/Codeberg) — overrides auto-detection from origin
   --hosted                Spin up project's Docker Compose in isolated network for DAST scanning and testing
+  --build-android-apk     In deploy mode, explicitly allow building Android source with ./gradlew assembleDebug
   --yes, -y               Skip confirmation prompt (for CI/automation)
   --max-cost <amount>     Warn if min. cost estimate exceeds this dollar amount (real cost typically 2–5x higher)
   --i-know-this-is-expensive
@@ -390,6 +391,7 @@ MAX_COST=""
 EXPENSIVE_ACK=false
 DRY_RUN=false
 LOCAL_MODE=false
+BUILD_ANDROID_APK=false
 OUTPUT_DIR=""
 OUTPUT_DIR_SET=false
 FORGE_PROVIDER=""
@@ -520,6 +522,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --local)
       LOCAL_MODE=true
+      shift
+      ;;
+    --build-android-apk)
+      BUILD_ANDROID_APK=true
       shift
       ;;
     --output)
@@ -786,12 +792,10 @@ fi
 # Deploy mode dispatches between two targets:
 #   - server : live host inspection (default; uses the `deployment` domain)
 #   - android: APK audit               (uses the `android` domain)
-# TRUST BOUNDARY: classification must NEVER execute project-controlled build
-# tooling (gradlew, gradle, mvnw, etc.) directly. APK discovery is a pure
-# filesystem walk. A source-tree fallback to `build_android_apk` is wired via
-# a `declare -F` guard so it is a no-op until the sibling helper lands; that
-# helper itself (sibling issue #189) is responsible for authorization,
-# confirmation, and dry-run gating before any build is invoked.
+# TRUST BOUNDARY: classification must not execute project-controlled build
+# tooling (gradlew, gradle, mvnw, etc.) unless the caller explicitly opted in
+# with --build-android-apk. APK discovery and source marker checks are pure
+# filesystem probes.
 TARGET_TYPE="server"
 ANDROID_APK_PATH=""
 ANDROID_PACKAGE_NAME=""
@@ -799,6 +803,7 @@ ANDROID_HAS_DEVICE="false"
 ANDROID_DEVICE_ID=""
 ANDROID_DEVICE_MODEL=""
 ANDROID_BUILT_FROM_SOURCE="false"
+ANDROID_SOURCE_BUILDABLE="false"
 
 # --- Validate project is a git repo ---
 _orig_project="$PROJECT_PATH"
@@ -822,11 +827,10 @@ fi
 # Skip when --project pointed at an .apk file (target already pinned above).
 # Step 1: discover_android_apk only walks the filesystem looking for *.apk;
 # it never invokes build tools.
-# Step 2: when no APK exists but the tree looks like an Android source project
-# (build.gradle{,.kts}), invoke build_android_apk via a `declare -F` guard so
-# this remains a no-op until the sibling helper (#187) lands. That helper
-# itself owns the trust-boundary gating (authorization / confirm / dry-run,
-# per #189); repolens.sh never calls gradle / gradlew directly here.
+# Step 2: when no APK exists but the tree looks like an Android source project,
+# use the shared shallow classifier so all marker forms follow lib/android.sh's
+# contract. Building remains behind --build-android-apk; --dry-run and --yes by
+# themselves never ask the helper to run.
 if [[ "$MODE" == "deploy" && "$TARGET_TYPE" != "android" ]]; then
   _discovered_apk="$(discover_android_apk "$PROJECT_PATH" 2>/dev/null || true)"
   if [[ -n "$_discovered_apk" ]]; then
@@ -834,8 +838,10 @@ if [[ "$MODE" == "deploy" && "$TARGET_TYPE" != "android" ]]; then
     TARGET_TYPE="android"
   fi
   unset _discovered_apk
-  if [[ -z "$ANDROID_APK_PATH" ]] \
-    && { [[ -f "$PROJECT_PATH/build.gradle" ]] || [[ -f "$PROJECT_PATH/build.gradle.kts" ]]; }; then
+  if [[ -z "$ANDROID_APK_PATH" ]] && android_project_appears_buildable "$PROJECT_PATH"; then
+    ANDROID_SOURCE_BUILDABLE="true"
+  fi
+  if [[ "$ANDROID_SOURCE_BUILDABLE" == "true" ]] && ! $DRY_RUN && $BUILD_ANDROID_APK; then
     if declare -F build_android_apk >/dev/null 2>&1; then
       ANDROID_APK_PATH="$(build_android_apk "$PROJECT_PATH" 2>/dev/null || true)"
       if [[ -n "$ANDROID_APK_PATH" ]]; then
