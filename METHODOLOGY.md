@@ -147,6 +147,8 @@ Deploy target resolution is intentionally ordered so `auto` remains conservative
 7. The resolved target kind selects either the `deployment` domain for servers or the `android` domain for Android targets.
 8. RepoLens exports the resolved metadata, including `$REPOLENS_ANDROID_APK_PATH` when an APK is known, for prompt composition and agent execution.
 
+Remote deploy metadata is a server-only qualifier on top of this target resolution. `--remote <ssh-target>` accepts `host`, `host:port`, `user@host`, or `user@host:port`, defaults the port to `22`, and is rejected outside deploy mode, with `--hosted`, or when target resolution selects Android. `--remote-key <path>` must point to an existing regular file. The current remote flag surface is CLI plumbing only: it validates and shows remote server metadata during `--dry-run`, but does not yet change how deploy commands are executed.
+
 The classification phase is pure filesystem probing; it must not execute target-controlled build tooling. Android source build fallback is deferred until after the dry-run exit point, deploy authorization, and the normal run confirmation. It also requires `--build-android-apk`, an Android target with no resolved APK, and shallow build markers. When those gates pass, RepoLens runs `./gradlew assembleDebug` rather than a release build because debug builds are the standard local inspection artifact and do not require release signing keys, Play signing, publishing credentials, or release-only packaging paths. `--dry-run` never runs Gradle or agents.
 
 ---

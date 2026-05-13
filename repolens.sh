@@ -137,6 +137,9 @@ Options:
   --output <path>         Output directory for local markdown files (requires --local, default: logs/<run-id>/issues/)
   --forge <provider>      gh (GitHub) | tea (Gitea) | fj (Forgejo/Codeberg) — overrides auto-detection from origin
   --hosted                Spin up project's Docker Compose in isolated network for DAST scanning and testing
+  --remote <ssh-target>   Deploy mode server target reachable by SSH (host, user@host, or user@host:port)
+  --remote-key <path>     SSH private key path for --remote; must be an existing regular file
+  --remote-label <text>   Human-readable remote target label for later auth prompts
   --deploy-target <target>
                           Deploy mode target: auto (default) | server | android
   --build-android-apk     In deploy mode, explicitly allow building Android source with ./gradlew assembleDebug
@@ -393,6 +396,12 @@ BUG_REPORT_SET=false
 SOURCE_FILE=""
 LOGS_PATH=""
 HOSTED=false
+REMOTE_TARGET=""
+REMOTE_USER=""
+REMOTE_HOST=""
+REMOTE_PORT="22"
+REMOTE_KEY=""
+REMOTE_LABEL=""
 AUTO_YES=false
 MAX_COST=""
 EXPENSIVE_ACK=false
@@ -530,6 +539,21 @@ while [[ $# -gt 0 ]]; do
       HOSTED=true
       shift
       ;;
+    --remote)
+      [[ $# -ge 2 ]] || die "Option --remote requires an argument."
+      REMOTE_TARGET="$2"
+      shift 2
+      ;;
+    --remote-key)
+      [[ $# -ge 2 ]] || die "Option --remote-key requires a path argument."
+      REMOTE_KEY="$2"
+      shift 2
+      ;;
+    --remote-label)
+      [[ $# -ge 2 ]] || die "Option --remote-label requires a text argument."
+      REMOTE_LABEL="$2"
+      shift 2
+      ;;
     --yes|-y)
       AUTO_YES=true
       shift
@@ -614,14 +638,55 @@ case "$MODE" in
   *) die "Invalid mode: $MODE (expected 'audit', 'feature', 'bugfix', 'bugreport', 'discover', 'deploy', 'custom', 'opensource', or 'content')" ;;
 esac
 
+parse_remote_target() {
+  local target="$1"
+  [[ "$target" =~ ^[A-Za-z0-9._@:-]+$ ]] || die "Invalid --remote target: $target"
+
+  REMOTE_TARGET="$target"
+  REMOTE_USER=""
+  REMOTE_HOST=""
+  REMOTE_PORT="22"
+
+  local hostpart="$target"
+  if [[ "$hostpart" == *@* ]]; then
+    REMOTE_USER="${hostpart%@*}"
+    hostpart="${hostpart##*@}"
+    [[ -n "$REMOTE_USER" ]] || die "Invalid --remote target: $target"
+  fi
+
+  if [[ "$hostpart" == *:* ]]; then
+    REMOTE_HOST="${hostpart%:*}"
+    REMOTE_PORT="${hostpart##*:}"
+  else
+    REMOTE_HOST="$hostpart"
+  fi
+
+  [[ -n "$REMOTE_HOST" ]] || die "Invalid --remote target: $target"
+  [[ "$REMOTE_PORT" =~ ^[0-9]+$ ]] || die "Invalid --remote port: $REMOTE_PORT"
+  export REMOTE_TARGET REMOTE_USER REMOTE_HOST REMOTE_PORT
+}
+
 # --- Validate deploy target intent ---
 if $DEPLOY_TARGET_SET && [[ "$MODE" != "deploy" ]]; then
   die "--deploy-target requires --mode deploy"
+fi
+if [[ -n "$REMOTE_TARGET" && "$MODE" != "deploy" ]]; then
+  die "--remote requires --mode deploy"
+fi
+if [[ -n "$REMOTE_TARGET" && "$HOSTED" == "true" ]]; then
+  die "--remote and --hosted are mutually exclusive"
 fi
 case "$DEPLOY_TARGET" in
   auto|server|android) ;;
   *) die "Invalid --deploy-target: $DEPLOY_TARGET (expected auto, server, or android)" ;;
 esac
+if [[ -n "$REMOTE_TARGET" ]]; then
+  parse_remote_target "$REMOTE_TARGET"
+fi
+if [[ -n "$REMOTE_KEY" && ! -f "$REMOTE_KEY" ]]; then
+  die "Remote key file does not exist or is not a regular file: $REMOTE_KEY"
+fi
+export REMOTE_KEY REMOTE_LABEL
 
 # --- Handle --bug-report flag ---
 if $BUG_REPORT_SET && [[ "$MODE" != "bugreport" ]]; then
@@ -892,6 +957,10 @@ if [[ "$MODE" == "deploy" && "$DEPLOY_TARGET" != "server" ]]; then
     exit 0
   fi
 
+fi
+
+if [[ -n "$REMOTE_TARGET" && "$MODE" == "deploy" && "${TARGET_TYPE:-server}" == "android" ]]; then
+  die "--remote is incompatible with android deploy targets"
 fi
 
 export_android_deploy_env() {
@@ -1827,6 +1896,16 @@ if $DRY_RUN; then
   echo "Project:      $PROJECT_PATH"
   echo "Rounds:      $ROUNDS"
   echo "Lenses:       $TOTAL_LENSES"
+  if [[ -n "$REMOTE_TARGET" ]]; then
+    _remote_display="${REMOTE_HOST}:${REMOTE_PORT}"
+    [[ -n "$REMOTE_USER" ]] && _remote_display="${REMOTE_USER}@${_remote_display}"
+    if [[ -n "$REMOTE_KEY" ]]; then
+      echo "Remote target: ${_remote_display} (key: $REMOTE_KEY)"
+    else
+      echo "Remote target: ${_remote_display}"
+    fi
+    unset _remote_display
+  fi
   if $LOCAL_MODE; then
     echo "Output:       local markdown ($OUTPUT_DIR)"
   fi
