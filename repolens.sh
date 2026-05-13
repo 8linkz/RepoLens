@@ -828,6 +828,10 @@ ANDROID_BUILT_FROM_SOURCE="false"
 ANDROID_SOURCE_BUILDABLE="false"
 NO_ANDROID_TARGET_MSG="No APK found and project does not appear to be an Android source tree (no build.gradle / gradlew). Either supply a project containing an APK, an Android source tree, or use --mode deploy with a server target."
 
+android_apk_display_path() {
+  _android_log_display_path "${1:-}"
+}
+
 # --- Validate project is a git repo ---
 _orig_project="$PROJECT_PATH"
 # Deploy mode also accepts a direct path to a pre-built .apk file. Resolve
@@ -950,6 +954,7 @@ maybe_build_android_apk_after_gates() {
   fi
   ANDROID_BUILT_FROM_SOURCE="true"
   refresh_android_metadata
+  log_info "Android deploy APK path after build: $(android_apk_display_path "$ANDROID_APK_PATH")"
 }
 
 # Extract Android metadata only after an APK is resolved. All probes are
@@ -1200,6 +1205,9 @@ log_info "Lens wall-clock budget: ${LENS_MAX_WALL_SECS}s"
 [[ -n "$MAX_ISSUES" ]] && log_info "Max issues: $MAX_ISSUES (DONE streak: 1)"
 [[ "$MODE" == "discover" ]] && log_info "Discover mode: single-pass brainstorming (DONE streak: 1)"
 [[ "$MODE" == "deploy" ]] && log_info "Deploy mode: single-pass server audit (DONE streak: 1)"
+if [[ "$MODE" == "deploy" && "${TARGET_TYPE:-server}" == "android" && -n "${ANDROID_APK_PATH:-}" ]]; then
+  log_info "Android deploy APK path: $(android_apk_display_path "$ANDROID_APK_PATH")"
+fi
 [[ "$MODE" == "custom" ]] && log_info "Custom mode: change impact analysis (DONE streak: 1)"
 [[ "$MODE" == "opensource" ]] && log_info "Open source mode: readiness audit (DONE streak: 1)"
 [[ "$MODE" == "content" ]] && log_info "Content mode: content audit & creation (DONE streak: 1)"
@@ -1623,7 +1631,7 @@ print_android_deploy_preview() {
   [[ "${TARGET_TYPE:-server}" == "android" ]] || return 0
 
   local apk_display package_display device_display
-  apk_display="$(_android_log_display_path "${ANDROID_APK_PATH:-}")"
+  apk_display="$(android_apk_display_path "${ANDROID_APK_PATH:-}")"
   package_display="${ANDROID_PACKAGE_NAME:-unknown}"
 
   if [[ "${ANDROID_HAS_DEVICE:-false}" == "true" && -n "${ANDROID_DEVICE_ID:-}" ]]; then
