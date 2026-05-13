@@ -875,21 +875,26 @@ if [[ "$MODE" == "deploy" && "$DEPLOY_TARGET" != "server" ]]; then
     exit 0
   fi
 
-  if [[ "$TARGET_TYPE" == "android" && -z "$ANDROID_APK_PATH" \
-        && "$ANDROID_SOURCE_BUILDABLE" == "true" ]] && ! $DRY_RUN && $BUILD_ANDROID_APK; then
-    if declare -F build_android_apk >/dev/null 2>&1; then
-      ANDROID_APK_PATH="$(build_android_apk "$PROJECT_PATH" 2>/dev/null || true)"
-      if [[ -n "$ANDROID_APK_PATH" ]]; then
-        ANDROID_BUILT_FROM_SOURCE="true"
-      fi
-    fi
-  fi
 fi
 
-# Extract Android metadata only after an APK is resolved. All probes are
-# read-only; absence of any tool (aapt, adb) leaves the corresponding
-# variable at its safe default rather than failing the run.
-if [[ "$MODE" == "deploy" && "$TARGET_TYPE" == "android" && -n "$ANDROID_APK_PATH" ]]; then
+export_android_deploy_env() {
+  REPOLENS_DEPLOY_TARGET_KIND="${TARGET_TYPE:-server}"
+  REPOLENS_ANDROID_APK_PATH="${ANDROID_APK_PATH:-}"
+  export TARGET_TYPE ANDROID_APK_PATH ANDROID_PACKAGE_NAME ANDROID_HAS_DEVICE
+  export REPOLENS_DEPLOY_TARGET_KIND REPOLENS_ANDROID_APK_PATH
+}
+
+refresh_android_metadata() {
+  ANDROID_PACKAGE_NAME=""
+  ANDROID_HAS_DEVICE="false"
+  ANDROID_DEVICE_ID=""
+  ANDROID_DEVICE_MODEL=""
+
+  [[ "$MODE" == "deploy" && "$TARGET_TYPE" == "android" && -n "$ANDROID_APK_PATH" ]] || {
+    export_android_deploy_env
+    return 0
+  }
+
   if command -v aapt >/dev/null 2>&1; then
     ANDROID_PACKAGE_NAME="$(aapt dump badging "$ANDROID_APK_PATH" 2>/dev/null \
       | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -1)"
@@ -914,8 +919,43 @@ if [[ "$MODE" == "deploy" && "$TARGET_TYPE" == "android" && -n "$ANDROID_APK_PAT
     fi
     unset _android_device_line
   fi
-fi
-export TARGET_TYPE ANDROID_APK_PATH ANDROID_PACKAGE_NAME ANDROID_HAS_DEVICE
+
+  export_android_deploy_env
+}
+
+maybe_build_android_apk_after_gates() {
+  [[ "$MODE" == "deploy" ]] || return 0
+  [[ "${TARGET_TYPE:-server}" == "android" ]] || return 0
+  [[ -z "${ANDROID_APK_PATH:-}" ]] || return 0
+  [[ "${ANDROID_SOURCE_BUILDABLE:-false}" == "true" ]] || return 0
+
+  $BUILD_ANDROID_APK || return 0
+
+  if ! declare -F build_android_apk >/dev/null 2>&1; then
+    die "Android APK build requested, but build_android_apk is unavailable"
+  fi
+
+  local built_apk build_rc rediscovered_apk
+  built_apk="$(build_android_apk "$PROJECT_PATH")"
+  build_rc=$?
+  if [[ "$build_rc" -ne 0 ]]; then
+    die "Android APK build failed with status $build_rc"
+  fi
+
+  rediscovered_apk="$(discover_android_apk "$PROJECT_PATH" 2>/dev/null || true)"
+  if [[ -n "$rediscovered_apk" ]]; then
+    ANDROID_APK_PATH="$rediscovered_apk"
+  else
+    ANDROID_APK_PATH="$built_apk"
+  fi
+  ANDROID_BUILT_FROM_SOURCE="true"
+  refresh_android_metadata
+}
+
+# Extract Android metadata only after an APK is resolved. All probes are
+# read-only; absence of any tool (aapt, adb) leaves the corresponding
+# variable at its safe default rather than failing the run.
+refresh_android_metadata
 # shellcheck disable=SC2034 # Read by forge_* wrappers in lib/forge.sh.
 FORGE_PROJECT_PATH="$PROJECT_PATH"
 # shellcheck disable=SC2034 # Read by forge_* wrappers in lib/forge.sh.
@@ -1686,15 +1726,20 @@ confirm_deploy_authorization() {
   echo ""
   echo "=== Deploy Mode — Authorization Required ==="
   echo ""
-  echo "Deploy mode runs read-only inspection commands on a live server"
-  echo "(e.g., systemctl, journalctl, ss, df)."
+  if [[ "${TARGET_TYPE:-server}" == "android" ]]; then
+    echo "Deploy mode runs read-only inspection commands against an Android APK"
+    echo "and may inspect the project source directory."
+  else
+    echo "Deploy mode runs read-only inspection commands on a live server"
+    echo "(e.g., systemctl, journalctl, ss, df)."
+  fi
   echo ""
   echo "WARNING: Running this against infrastructure you do not own or"
   echo "are not authorized to audit may violate computer crime laws,"
   echo "including §202a StGB (DE), the Computer Fraud and Abuse Act (US),"
   echo "and similar legislation in other jurisdictions."
   echo ""
-  read -rp "I confirm I am authorized to audit this server [y/N] " answer
+  read -rp "I confirm I am authorized to audit this deploy target [y/N] " answer
   case "$answer" in
     [yY]|[yY][eE][sS]) return 0 ;;
     *) echo "Aborted — deploy mode requires explicit authorization."; exit 0 ;;
@@ -1785,6 +1830,7 @@ fi
 confirm_autonomous_mode
 confirm_deploy_authorization
 confirm_run
+maybe_build_android_apk_after_gates
 
 # --- Ensure forge labels ---
 ensure_labels() {
@@ -1951,6 +1997,8 @@ run_lens() {
     vars+="|ANDROID_APK_PATH=${ANDROID_APK_PATH}"
     vars+="|ANDROID_PACKAGE_NAME=${ANDROID_PACKAGE_NAME}"
     vars+="|ANDROID_HAS_DEVICE=${ANDROID_HAS_DEVICE}"
+    vars+="|REPOLENS_DEPLOY_TARGET_KIND=${REPOLENS_DEPLOY_TARGET_KIND:-${TARGET_TYPE}}"
+    vars+="|REPOLENS_ANDROID_APK_PATH=${REPOLENS_ANDROID_APK_PATH:-${ANDROID_APK_PATH}}"
   fi
 
   # Compose prompt (pass local mode params)

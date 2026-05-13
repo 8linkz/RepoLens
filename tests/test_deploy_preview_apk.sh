@@ -341,10 +341,10 @@ if [[ "$HAVE_SCRIPT" -eq 1 ]]; then
 fi
 
 # ===========================================================================
-# Test 5: Build-helper APK provenance is shown in the preview
+# Test 5: Source-build APKs are not built before the final confirmation
 # ===========================================================================
 echo ""
-echo "Test 5: Android deploy confirmation labels APKs built by the helper"
+echo "Test 5: Android deploy confirmation defers source builds until after Proceed"
 BUILD_SOURCE_DIR="$TMPDIR/android-source-build"
 BUILT_APK_DIR="$TMPDIR/helper-built-output"
 BUILT_APK_PATH="$BUILT_APK_DIR/app-debug.apk"
@@ -370,10 +370,11 @@ if [[ "$HAVE_SCRIPT" -eq 1 ]]; then
   unset REPOLENS_FAKE_BUILT_APK _old_bash_env _old_bash_env_set
   out5="$(cat "$LOG5")"
 
-  assert_contains "built-helper Android run reaches the final abort path" "Aborted." "$out5"
-  assert_line_contains_both "built-helper preview shows built APK path" "APK:" "$BUILT_APK_PATH" "$out5"
-  assert_contains "built-helper preview labels build provenance" "(built from source via gradlew assembleDebug)" "$out5"
-  assert_before "build provenance appears before the final prompt" "built from source via gradlew assembleDebug" "Proceed?" "$out5"
+  assert_contains "source-build Android run reaches the final abort path" "Aborted." "$out5"
+  assert_line_contains_both "source-build preview keeps APK unresolved before Proceed" "APK:" "unknown" "$out5"
+  assert_not_contains "source-build preview does not show post-confirm APK path" "$BUILT_APK_PATH" "$out5"
+  assert_not_contains "source-build preview does not claim build provenance before Proceed" "(built from source via gradlew assembleDebug)" "$out5"
+  assert_before "unresolved APK preview appears before the final prompt" "APK:" "Proceed?" "$out5"
 fi
 
 # ===========================================================================

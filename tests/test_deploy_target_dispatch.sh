@@ -414,7 +414,7 @@ assert_contains "non-dry gradlew-only project: run reached lens resolution" "not
 assert_contains "non-dry app/build.gradle project: run reached lens resolution" "not found" "$out6b"
 
 echo ""
-echo "Test 6b: explicit build opt-in uses buildable markers without running fixture gradlew"
+echo "Test 6b: explicit build opt-in does not build during classification"
 LOG6C="$TMPDIR/run6c.log"
 LOG6D="$TMPDIR/run6d.log"
 rm -f "$BUILD_HELPER_SENTINEL" "$GRADLEW_ONLY_SENTINEL"
@@ -429,10 +429,7 @@ else
   unset BASH_ENV
 fi
 unset _old_bash_env _old_bash_env_set
-helper_calls="$(cat "$BUILD_HELPER_SENTINEL" 2>/dev/null || true)"
-
-assert_contains "opt-in gradlew-only project: build helper called through classifier" "$GRADLEW_ONLY_DIR" "$helper_calls"
-assert_contains "opt-in app/build.gradle project: build helper called through classifier" "$APP_BUILD_ONLY_DIR" "$helper_calls"
+assert_file_absent "opt-in gradlew-only project: build helper was NOT invoked during classification" "$BUILD_HELPER_SENTINEL"
 assert_file_absent "opt-in test helper did not execute project gradlew fixture" "$GRADLEW_ONLY_SENTINEL"
 
 # ===========================================================================
