@@ -671,6 +671,87 @@ parse_remote_target() {
   export REMOTE_TARGET REMOTE_USER REMOTE_HOST REMOTE_PORT
 }
 
+remote_hash() {
+  local value="$1" len="$2" hash
+  hash="$(printf '%s' "$value" | sha256sum)"
+  hash="${hash%% *}"
+  printf '%s\n' "${hash:0:$len}"
+}
+
+remote_assert_private_dir() {
+  local dir="$1" owner mode
+  [[ -d "$dir" && ! -L "$dir" ]] || return 1
+  owner="$(stat -c '%u' "$dir" 2>/dev/null)" || return 1
+  mode="$(stat -c '%a' "$dir" 2>/dev/null)" || return 1
+  [[ "$owner" == "$(id -u)" ]] || return 1
+  [[ "$mode" =~ ^0?700$ ]] || return 1
+}
+
+remote_control_socket_base() {
+  local owner mode
+  if [[ -n "${XDG_RUNTIME_DIR:-}" && "$XDG_RUNTIME_DIR" == /* && -d "$XDG_RUNTIME_DIR" && ! -L "$XDG_RUNTIME_DIR" ]]; then
+    owner="$(stat -c '%u' "$XDG_RUNTIME_DIR" 2>/dev/null || true)"
+    mode="$(stat -c '%a' "$XDG_RUNTIME_DIR" 2>/dev/null || true)"
+    if [[ "$owner" == "$(id -u)" && "$mode" =~ ^0?700$ ]]; then
+      printf '%s\n' "$XDG_RUNTIME_DIR"
+      return 0
+    fi
+  fi
+  printf '%s\n' /tmp
+}
+
+remote_control_socket_dir_in_base() {
+  local dir="$1" base="$2" leaf
+  [[ "$dir" == "${base%/}"/rl-cm-* ]] || return 1
+  leaf="${dir##*/}"
+  [[ "$leaf" == rl-cm-* && "$leaf" != *"/"* ]] || return 1
+}
+
+remote_control_socket_dir() {
+  local state_file="$REMOTE_RUN_DIR/control-dir"
+  local base dir tmp old_umask run_hash
+
+  base="$(remote_control_socket_base)"
+  run_hash="$(remote_hash "$RUN_ID" 8)"
+
+  if [[ -f "$state_file" ]]; then
+    IFS= read -r dir < "$state_file" || dir=""
+    if [[ -n "$dir" && -d "$dir" ]]; then
+      remote_control_socket_dir_in_base "$dir" "$base" || die "Unsafe persisted remote SSH control socket directory: $dir"
+      remote_assert_private_dir "$dir" || die "Unsafe persisted remote SSH control socket directory: $dir"
+      REMOTE_CONTROL_SOCKET_DIR_RESULT="$dir"
+      return 0
+    fi
+  fi
+
+  old_umask="$(umask)"
+  umask 077
+  dir="$(mktemp -d "${base%/}/rl-cm-${run_hash}.XXXXXX")" || {
+    umask "$old_umask"
+    die "Unable to create remote SSH control socket directory under $base"
+  }
+  umask "$old_umask"
+
+  chmod 700 "$dir" || die "Unable to set mode 0700 on remote SSH control socket directory: $dir"
+  remote_assert_private_dir "$dir" || die "Unsafe remote SSH control socket directory: $dir"
+
+  tmp="$state_file.tmp.$$"
+  printf '%s\n' "$dir" > "$tmp" || die "Unable to write remote SSH control socket metadata"
+  mv "$tmp" "$state_file" || die "Unable to persist remote SSH control socket metadata"
+  REMOTE_CONTROL_SOCKET_DIR_RESULT="$dir"
+}
+
+remote_control_socket_path() {
+  local tuple target_hash run_hash socket_dir socket_path
+  socket_dir="$1"
+  tuple="user=${REMOTE_USER}|host=${REMOTE_HOST}|port=${REMOTE_PORT}"
+  target_hash="$(remote_hash "$tuple" 16)"
+  run_hash="$(remote_hash "$RUN_ID" 8)"
+  socket_path="$socket_dir/cm-${target_hash}-${run_hash}.sock"
+  (( ${#socket_path} < 90 )) || die "Remote SSH control socket path is too long for OpenSSH: $socket_path"
+  printf '%s\n' "$socket_path"
+}
+
 template_var_escape() {
   local value="$1"
   value="${value//\\/\\\\}"
@@ -702,8 +783,7 @@ export REMOTE_KEY REMOTE_LABEL
 if [[ -n "$REMOTE_TARGET" ]]; then
   REPOLENS_REMOTE_TARGET="$REMOTE_TARGET"
   REPOLENS_REMOTE_LABEL="${REMOTE_LABEL:-$REMOTE_TARGET}"
-  REPOLENS_REMOTE_SSH_SOCKET="${REPOLENS_REMOTE_SSH_SOCKET:-none}"
-  export REPOLENS_REMOTE_TARGET REPOLENS_REMOTE_LABEL REPOLENS_REMOTE_SSH_SOCKET
+  export REPOLENS_REMOTE_TARGET REPOLENS_REMOTE_LABEL
 fi
 
 # --- Handle --bug-report flag ---
@@ -866,11 +946,22 @@ _cleanup_clone() {
     rm -rf "$CLONE_DIR"
   fi
 }
+
+_cleanup_remote_control_socket() {
+  [[ -n "${REPOLENS_REMOTE_SSH_CONTROL_DIR:-}" ]] || return 0
+  local base
+  base="$(remote_control_socket_base)"
+  if remote_control_socket_dir_in_base "$REPOLENS_REMOTE_SSH_CONTROL_DIR" "$base" && remote_assert_private_dir "$REPOLENS_REMOTE_SSH_CONTROL_DIR"; then
+    rm -rf -- "$REPOLENS_REMOTE_SSH_CONTROL_DIR"
+  fi
+}
+
 _cleanup_all() {
   stop_status_updater "${REPOLENS_FINAL_STATE:-finished}" 2>/dev/null || true
   if $HOSTED 2>/dev/null; then
     cleanup_hosted "${RUN_ID:-}" 2>/dev/null
   fi
+  _cleanup_remote_control_socket 2>/dev/null || true
   _cleanup_clone
 }
 trap _cleanup_all EXIT
@@ -1220,6 +1311,14 @@ mkdir -p "$LOG_BASE"
 HEARTBEAT_DIR="$LOG_BASE/.heartbeat"
 mkdir -p "$HEARTBEAT_DIR"
 SUMMARY_FILE="$LOG_BASE/summary.json"
+if [[ -n "$REMOTE_TARGET" ]]; then
+  REMOTE_RUN_DIR="$LOG_BASE/.remote"
+  mkdir -p "$REMOTE_RUN_DIR"
+  remote_control_socket_dir
+  REPOLENS_REMOTE_SSH_CONTROL_DIR="$REMOTE_CONTROL_SOCKET_DIR_RESULT"
+  REPOLENS_REMOTE_SSH_SOCKET="$(remote_control_socket_path "$REPOLENS_REMOTE_SSH_CONTROL_DIR")"
+  export REPOLENS_REMOTE_SSH_CONTROL_DIR REPOLENS_REMOTE_SSH_SOCKET
+fi
 
 # --- Persist / rehydrate bug report for bugreport mode ---
 # The resolved bug report is copied verbatim to logs/<run-id>/bug-report.txt so
@@ -1324,7 +1423,13 @@ run_remote_preflight() {
 
   local remote_dir="$LOG_BASE/.remote"
   local preflight_log="$remote_dir/preflight.log"
-  local ssh_args=(-o BatchMode=yes -o ConnectTimeout=5)
+  local ssh_args=(
+    -o BatchMode=yes
+    -o ConnectTimeout=5
+    -o ControlMaster=auto
+    -o ControlPath="$REPOLENS_REMOTE_SSH_SOCKET"
+    -o ControlPersist=600
+  )
   local ssh_target="$REMOTE_HOST"
 
   mkdir -p "$remote_dir"

@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- README and METHODOLOGY now document remote deploy mode end-to-end, including `--remote` examples, SSH key and ControlMaster behavior, remote troubleshooting, workstation-local forge actions, and the remote deploy security warning ([#201](https://github.com/TheMorpheus407/RepoLens/issues/201)).
 - Remote deploy authorization and normal pre-run confirmation prompts now show the selected `--remote` target before the operator starts the run. Labelled targets show both `Remote target: <label>` and `Raw target: <ssh-target>`, and remote prompts include the SSH wrapper preview `ssh -S <socket> <target> '...'` ([#199](https://github.com/TheMorpheus407/RepoLens/issues/199)).
 - `--remote <ssh-target>`, `--remote-key <path>`, and `--remote-label <text>` deploy-mode support. Remote targets accept `host`, `host:port`, `user@host`, or `user@host:port`, default to port `22`, require server deploy mode, reject `--hosted` and Android deploy targets, validate key paths as regular files, and appear in deploy `--dry-run` output ([#196](https://github.com/TheMorpheus407/RepoLens/issues/196)).
 - `--deploy-target auto|server|android` for deploy mode. `auto` remains the default and falls back to live-server deployment lenses unless an APK or shallow Android source marker is found; `server` skips Android detection and build handling; `android` requires an APK or shallow Android source tree ([#188](https://github.com/TheMorpheus407/RepoLens/issues/188)).

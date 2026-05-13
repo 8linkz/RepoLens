@@ -68,6 +68,20 @@ cat > "$FAKE_BIN/ssh" <<'SH'
 #!/usr/bin/env bash
 if [[ -n "${FAKE_SSH_ARGS_LOG:-}" ]]; then
   printf '%s\n' "$*" >> "$FAKE_SSH_ARGS_LOG"
+  for arg in "$@"; do
+    case "$arg" in
+      ControlPath=*)
+        control_path="${arg#ControlPath=}"
+        control_dir="$(dirname "$control_path")"
+        printf 'CONTROL_PATH=%s\n' "$control_path" >> "$FAKE_SSH_ARGS_LOG"
+        if [[ -d "$control_dir" ]]; then
+          printf 'CONTROL_DIR=%s\n' "$control_dir" >> "$FAKE_SSH_ARGS_LOG"
+          printf 'CONTROL_DIR_MODE=%s\n' "$(stat -c '%a' "$control_dir")" >> "$FAKE_SSH_ARGS_LOG"
+          printf 'CONTROL_DIR_OWNER=%s\n' "$(stat -c '%u' "$control_dir")" >> "$FAKE_SSH_ARGS_LOG"
+        fi
+        ;;
+    esac
+  done
 fi
 if [[ "$*" == *"failhost"* ]]; then
   printf '%s\n' "simulated ssh preflight failure for failhost"
@@ -130,6 +144,32 @@ ssh_args_output="$(cat "$FAKE_SSH_ARGS_LOG" 2>/dev/null || true)"
 assert_contains "Remote preflight passes parsed SSH port option" "-p 2222" "$ssh_args_output"
 assert_contains "Remote preflight passes host without colon port" "ubuntu@x hostname && uname -a" "$ssh_args_output"
 assert_not_contains "Remote preflight does not pass raw host:port as SSH destination" "ubuntu@x:2222" "$ssh_args_output"
+assert_contains "Remote preflight enables ControlMaster" "ControlMaster=auto" "$ssh_args_output"
+assert_contains "Remote preflight sets ControlPersist" "ControlPersist=600" "$ssh_args_output"
+expected_remote_socket_hash="$(printf '%s' 'user=ubuntu|host=x|port=2222' | sha256sum)"
+expected_remote_socket_hash="${expected_remote_socket_hash%% *}"
+expected_remote_socket_hash="${expected_remote_socket_hash:0:16}"
+expected_remote_run_hash="$(printf '%s' "$REMOTE_RUN_ID" | sha256sum)"
+expected_remote_run_hash="${expected_remote_run_hash%% *}"
+expected_remote_run_hash="${expected_remote_run_hash:0:8}"
+control_path="$(awk -F= '$1=="CONTROL_PATH"{print $2}' "$FAKE_SSH_ARGS_LOG" | head -1)"
+control_dir="$(dirname "$control_path")"
+assert_contains "Remote preflight uses target-bound ControlPath" \
+  "/cm-${expected_remote_socket_hash}-${expected_remote_run_hash}.sock" "$control_path"
+assert_contains "Remote preflight uses secure runtime ControlPath directory" \
+  "/rl-cm-${expected_remote_run_hash}." "$control_dir"
+assert_not_contains "Remote preflight does not use predictable legacy socket directory" \
+  "/tmp/repolens-ssh-" "$control_path"
+assert_not_contains "Remote preflight ControlPath is not under the run log directory" \
+  "$REMOTE_RUN_DIR/.remote" "$control_path"
+TOTAL=$((TOTAL + 1))
+if (( ${#control_path} < 90 )); then
+  record_pass "Remote preflight ControlPath is length-bounded"
+else
+  record_fail "Remote preflight ControlPath is length-bounded" "length=${#control_path} path=$control_path"
+fi
+assert_contains "Remote preflight control dir mode is 0700" "CONTROL_DIR_MODE=700" "$ssh_args_output"
+assert_contains "Remote preflight control dir is owned by current uid" "CONTROL_DIR_OWNER=$(id -u)" "$ssh_args_output"
 
 TOTAL=$((TOTAL + 1))
 if [[ -f "$REMOTE_PREFLIGHT" ]] \

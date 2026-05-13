@@ -194,9 +194,16 @@ assert_contains "chmod +x instruction" "chmod" "$readme_content"
 
 echo ""
 echo "Test 19: All CLI flags documented in README"
-for flag in "--project" "--agent" "--mode" "--change" "--source" "--focus" "--domain" "--parallel" "--max-parallel" "--resume" "--spec" "--max-issues" "--hosted"; do
+for flag in "--project" "--agent" "--mode" "--change" "--source" "--focus" "--domain" "--parallel" "--max-parallel" "--resume" "--spec" "--max-issues" "--hosted" "--remote" "--remote-key" "--remote-label"; do
   assert_contains "flag $flag documented" "$flag" "$readme_content"
 done
+
+echo ""
+echo "Test 19b: Remote deploy troubleshooting entries are documented"
+assert_contains "BatchMode remote troubleshooting row" 'Cannot reach remote target … BatchMode requires no password prompt' "$readme_content"
+assert_contains "kex remote troubleshooting row" 'Cannot reach remote target … kex_exchange_identification' "$readme_content"
+assert_contains "lost remote control socket warning row" '[WARN] remote control socket lost; reopening' "$readme_content"
+assert_contains "unwrapped local command troubleshooting row" 'agent ran an unwrapped local command' "$readme_content"
 
 # =====================================================================
 # 7. Legal section

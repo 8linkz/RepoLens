@@ -98,6 +98,15 @@ assert_not_contains() {
   fi
 }
 
+assert_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  if [[ "$actual" == "$expected" ]]; then
+    record_pass "$desc"
+  else
+    record_fail "$desc (expected '$expected', got '$actual')"
+  fi
+}
+
 record_run_id() {
   local log_file="$1" run_id
   run_id="$(grep -oE 'RepoLens run [^ ]+ starting' "$log_file" 2>/dev/null | head -1 | awk '{print $3}' || true)"
@@ -125,6 +134,14 @@ if [[ -n "${FAKE_CLAUDE_ENV_LOG:-}" ]]; then
     printf 'REPOLENS_REMOTE_TARGET=%s\n' "${REPOLENS_REMOTE_TARGET:-}"
     printf 'REPOLENS_REMOTE_LABEL=%s\n' "${REPOLENS_REMOTE_LABEL:-}"
     printf 'REPOLENS_REMOTE_SSH_SOCKET=%s\n' "${REPOLENS_REMOTE_SSH_SOCKET:-}"
+    printf 'REPOLENS_REMOTE_SSH_CONTROL_DIR=%s\n' "${REPOLENS_REMOTE_SSH_CONTROL_DIR:-}"
+    if [[ -n "${REPOLENS_REMOTE_SSH_CONTROL_DIR:-}" && -d "$REPOLENS_REMOTE_SSH_CONTROL_DIR" ]]; then
+      printf 'REPOLENS_REMOTE_SSH_CONTROL_DIR_MODE=%s\n' "$(stat -c '%a' "$REPOLENS_REMOTE_SSH_CONTROL_DIR")"
+      printf 'REPOLENS_REMOTE_SSH_CONTROL_DIR_OWNER=%s\n' "$(stat -c '%u' "$REPOLENS_REMOTE_SSH_CONTROL_DIR")"
+      if [[ -f "${REPOLENS_LOG_BASE:-}/.remote/control-dir" ]]; then
+        printf 'REPOLENS_REMOTE_CONTROL_DIR_METADATA=%s\n' "$(cat "$REPOLENS_LOG_BASE/.remote/control-dir")"
+      fi
+    fi
   } >> "$FAKE_CLAUDE_ENV_LOG"
 fi
 printf '%s\n' DONE
@@ -436,8 +453,61 @@ assert_contains "agent env includes prompt remote target" \
   "REPOLENS_REMOTE_TARGET=ubuntu@host.example.com:2222" "$env15"
 assert_contains "agent env includes prompt remote label" \
   "REPOLENS_REMOTE_LABEL=Production host" "$env15"
-assert_contains "agent env includes nonempty prompt SSH socket setting" \
+expected_socket15_hash="$(printf '%s' 'user=ubuntu|host=host.example.com|port=2222' | sha256sum)"
+expected_socket15_hash="${expected_socket15_hash%% *}"
+expected_socket15_hash="${expected_socket15_hash:0:16}"
+run15_id="$(grep -oE 'RepoLens run [^ ]+ starting' "$LOG15" | head -1 | awk '{print $3}')"
+expected_run15_hash="$(printf '%s' "$run15_id" | sha256sum)"
+expected_run15_hash="${expected_run15_hash%% *}"
+expected_run15_hash="${expected_run15_hash:0:8}"
+socket15="$(awk -F= '$1=="REPOLENS_REMOTE_SSH_SOCKET"{print $2}' "$ENV15" | tail -1)"
+socket15_dir="$(dirname "$socket15")"
+assert_contains "agent env includes target-bound prompt SSH socket setting" \
+  "/cm-${expected_socket15_hash}-${expected_run15_hash}.sock" "$socket15"
+assert_contains "agent env SSH socket directory is a secure runtime dir" \
+  "/rl-cm-${expected_run15_hash}." "$socket15_dir"
+assert_not_contains "agent env SSH socket does not use predictable legacy directory" \
+  "/tmp/repolens-ssh-" "$socket15"
+assert_not_contains "agent env SSH socket does not use the old none placeholder" \
   "REPOLENS_REMOTE_SSH_SOCKET=none" "$env15"
+if (( ${#socket15} < 90 )); then
+  record_pass "agent env SSH socket path is length-bounded"
+else
+  record_fail "agent env SSH socket path is length-bounded (length=${#socket15}, path=$socket15)"
+fi
+assert_contains "agent env exports SSH control dir" \
+  "REPOLENS_REMOTE_SSH_CONTROL_DIR=$socket15_dir" "$env15"
+assert_contains "agent sees SSH control dir mode 0700" \
+  "REPOLENS_REMOTE_SSH_CONTROL_DIR_MODE=700" "$env15"
+assert_contains "agent sees SSH control dir owned by current uid" \
+  "REPOLENS_REMOTE_SSH_CONTROL_DIR_OWNER=$(id -u)" "$env15"
+metadata15="$(cat "$SCRIPT_DIR/logs/$run15_id/.remote/control-dir" 2>/dev/null || true)"
+assert_eq "remote control dir metadata records socket directory" "$socket15_dir" "$metadata15"
+
+# ===========================================================================
+# Test 15b: unsafe persisted remote control-dir metadata fails closed
+# ===========================================================================
+echo ""
+echo "Test 15b: unsafe persisted remote control-dir metadata is rejected"
+BAD_RESUME_ID="remote-bad-control-dir-$$"
+BAD_RESUME_DIR="$SCRIPT_DIR/logs/$BAD_RESUME_ID"
+mkdir -p "$BAD_RESUME_DIR/.remote"
+CREATED_LOG_DIRS+=("$BAD_RESUME_DIR")
+printf '%s\n' "$SCRIPT_DIR" > "$BAD_RESUME_DIR/.remote/control-dir"
+LOG15B="$TMPDIR/run15b.log"
+run_repolens "$PLAIN_DIR" "$LOG15B" \
+  --mode deploy \
+  --local \
+  --yes \
+  --focus service-health \
+  --remote ubuntu@host.example.com:2222 \
+  --resume "$BAD_RESUME_ID" || rc15b=$?
+rc15b="${rc15b:-0}"
+out15b="$(cat "$LOG15B")"
+
+assert_rc_nonzero "unsafe persisted control dir exits non-zero" "$rc15b"
+assert_contains "unsafe persisted control dir reports failure" \
+  "Unsafe persisted remote SSH control socket directory: $SCRIPT_DIR" "$out15b"
 
 # ===========================================================================
 # Test 16: --remote-label pipe text cannot inject template variables

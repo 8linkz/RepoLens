@@ -195,7 +195,8 @@ if [[ "$HAVE_SCRIPT" -eq 1 ]]; then
 
   assert_contains "remote auth run aborts at deploy authorization" "Aborted" "$out1"
   assert_contains "remote auth prompt shows normalized default port target" "Remote target: ubuntu@host.example.com:22" "$out1"
-  assert_contains "remote auth prompt shows SSH wrapper preview" "Local commands will be wrapped in: ssh -S <socket> ubuntu@host.example.com '...'" "$out1"
+  assert_contains "remote auth prompt shows SSH wrapper preview" "Local commands will be wrapped in: ssh -S " "$out1"
+  assert_contains "remote auth prompt targets raw SSH target" " ubuntu@host.example.com '...'" "$out1"
   assert_contains "legal warning still references StGB" "including §202a StGB (DE), the Computer Fraud and Abuse Act (US)," "$out1"
   assert_contains "legal warning final jurisdiction line is unchanged" "and similar legislation in other jurisdictions." "$out1"
   assert_before "remote target appears before deploy authorization question" "Remote target: ubuntu@host.example.com:22" "I confirm I am authorized" "$out1"
@@ -227,7 +228,7 @@ if [[ "$HAVE_SCRIPT" -eq 1 ]]; then
   assert_contains "remote run reaches standard confirmation" "=== RepoLens Confirmation ===" "$out3"
   assert_contains "remote run reaches final abort path" "Aborted." "$out3"
   assert_count_at_least "remote target appears in both prompt surfaces" "Remote target: ubuntu@host.example.com:22" 2 "$out3"
-  assert_count_at_least "wrapper preview appears in both prompt surfaces" "Local commands will be wrapped in: ssh -S <socket> ubuntu@host.example.com '...'" 2 "$out3"
+  assert_count_at_least "wrapper preview appears in both prompt surfaces" "Local commands will be wrapped in: ssh -S " 2 "$out3"
   assert_before "standard confirmation remote target appears before Proceed" "=== RepoLens Confirmation ===" "Proceed? [y/N]" "$out3"
   assert_before "wrapper preview appears before Proceed" "Local commands will be wrapped in:" "Proceed? [y/N]" "$out3"
 fi
@@ -241,10 +242,10 @@ if [[ "$HAVE_SCRIPT" -eq 1 ]]; then
   remote_vars="${base_vars}|REPOLENS_REMOTE_TARGET=ubuntu@host.example.com:2222|REPOLENS_REMOTE_LABEL=ubuntu@host.example.com:2222"
   remote_rendered="$(compose_prompt "$DEPLOY_BASE" "$LENS_FILE" "$remote_vars" "" "deploy" "" "" "false" "false" "")"
 
-  assert_contains "operator preview shows raw non-default port target in SSH wrapper" "Local commands will be wrapped in: ssh -S <socket> ubuntu@host.example.com:2222 '...'" "$out4"
+  assert_contains "operator preview shows raw non-default port target in SSH wrapper" " ubuntu@host.example.com:2222 '...'" "$out4"
   assert_contains "agent prompt uses the same raw target variable for SSH" 'ssh -S "$REPOLENS_REMOTE_SSH_SOCKET" "$REPOLENS_REMOTE_TARGET" '\''CMD'\''' "$remote_rendered"
   assert_contains "agent prompt includes raw non-default port target as label context" "confirm the hostname matches \`ubuntu@host.example.com:2222\`" "$remote_rendered"
-  assert_not_contains "operator preview does not show a divergent -p port form" "ssh -S <socket> -p 2222 ubuntu@host.example.com '...'" "$out4"
+  assert_not_contains "operator preview does not show a divergent -p port form" "-p 2222 ubuntu@host.example.com '...'" "$out4"
 fi
 
 echo ""

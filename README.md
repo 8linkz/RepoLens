@@ -172,6 +172,8 @@ Under the hood, RepoLens spawns AI agents (claude, codex, etc.) with shell acces
 - **Scripts in the scanned repo can execute.** A hostile `docker-compose.yml`, `Makefile`, `package.json` postinstall hook, or shell script could be invoked by the agent while investigating.
 - **Deploy mode runs live shell commands** against whatever host you point it at — see also [Legal → Deploy Mode](#deploy-mode--authorization-required) for the authorization requirements.
 
+Remote deploy mode runs read-only commands on a server you authorize, but the agent has shell access via the SSH multiplexer. Treat it with the same caution as deploy mode locally — only point it at hosts you own or are explicitly authorized to audit. The legal references in `Deploy Mode — Authorization Required` apply identically to remote targets.
+
 **Recommended setup:**
 
 - Run RepoLens inside a **dedicated, isolated VM or container** — never on a workstation that holds SSH keys, cloud credentials, browser sessions, or anything you can't afford to lose.
@@ -231,6 +233,13 @@ RepoLens supports 8 modes. Each mode controls which domains/lenses are visible a
 # Deploy — force live-server lenses even if Android files are present
 ./repolens.sh --project /srv/myapp --agent claude --mode deploy --deploy-target server
 
+# Remote deploy — audit a server from your workstation
+./repolens.sh --project ~/myapp --agent claude --mode deploy \
+    --remote ubuntu@198.51.100.10 \
+    --remote-key ~/.ssh/server_deploy \
+    --remote-label "Production app server" \
+    --max-issues 1
+
 # Deploy — audit a remote server target over SSH
 ./repolens.sh --project /srv/myapp --agent claude --mode deploy --remote ubuntu@host.example.com:2222 --remote-key ~/.ssh/id_ed25519
 
@@ -267,6 +276,18 @@ RepoLens supports 8 modes. Each mode controls which domains/lenses are visible a
 # Dry run — preview which lenses would run without executing anything
 ./repolens.sh --project ~/my-app --agent claude --mode deploy --dry-run
 ```
+
+## Remote deploy mode
+
+Remote deploy mode lets you run deploy-mode server lenses from your workstation while inspecting a server over SSH. Use it only for server targets; it is rejected with `--hosted` and Android deploy targets.
+
+Remote SSH runs with `BatchMode=yes`, so the connection must not require an interactive password prompt. Load the key before starting RepoLens, for example with `ssh-add ~/.ssh/server_deploy`, or pass an unlocked key with `--remote-key <path>`. RepoLens writes the remote preflight output for each run under `logs/<run-id>/.remote/preflight.log`.
+
+Remote deploy uses OpenSSH ControlMaster so the run performs one TCP connection and authentication, then multiplexes agent SSH commands over the control socket. The master connection persists for 600 seconds after the last command, which reduces repeated authentication and connection setup during long deploy runs.
+
+For the first run against a remote host, start with `--max-issues 1` and avoid `--parallel`; if you do enable parallel execution, keep it to `--parallel --max-parallel 1` until the transcript confirms commands are wrapped correctly and the target handles the SSH load. `--max-issues 1` keeps the first pass short, and `--max-parallel 1` prevents several lenses from competing for the same remote target while you validate the setup.
+
+Forge actions still happen on the operator workstation. `gh`, `tea`, or `fj` issue creation, label setup, and issue lookups run locally against the configured forge account; only deploy-target investigation commands are wrapped over SSH.
 
 ## Advanced controls
 
@@ -685,6 +706,10 @@ Most first-run failures fall into one of these patterns. Errors are quoted verba
 | `--remote and --hosted are mutually exclusive`                                                                                       | Remote server metadata and hosted Docker Compose scanning were requested together                            | Choose either remote deploy server metadata with `--mode deploy --remote ...` or local hosted DAST scanning with `--hosted`                                                         |
 | `--remote is incompatible with android deploy targets`                                                                               | `--remote` was combined with a direct APK, detected Android source tree, or `--deploy-target android`        | Remove `--remote`, or force server deploy with `--deploy-target server` when the path should be treated as a live-server target                                                      |
 | `Remote key file does not exist or is not a regular file: …`                                                                         | `--remote-key` points to a missing path or a directory                                                       | Pass an existing private key file path, or omit `--remote-key` to rely on default SSH key resolution                                                                                 |
+| `Cannot reach remote target … BatchMode requires no password prompt`                                                                  | SSH needs a passphrase or password but RepoLens remote preflight is non-interactive                          | `ssh-add` your key first, or pass an unlocked key with `--remote-key <path>`                                                                                                        |
+| `Cannot reach remote target … kex_exchange_identification`                                                                            | The target or network is rejecting new SSH handshakes; fail2ban or a similar protection may have tripped     | Wait 10 minutes, verify direct SSH works, then retry with lower concurrency such as `--max-issues 1` or `--parallel --max-parallel 1`                                                |
+| `[WARN] remote control socket lost; reopening`                                                                                        | The SSH ControlMaster socket was dropped or expired during a long-running lens                               | This can be expected on long-running lenses; if the run aborts, reduce concurrency and check `ServerAliveInterval` on the target's sshd and `ClientAliveInterval` on the master       |
+| `agent ran an unwrapped local command`                                                                                                | A deploy lens executed a target command without the SSH wrapper                                              | Re-run with `--max-issues 1`, watch the transcript, and consider opening an issue with the offending lens-id                                                                         |
 | `--hosted requires Docker to be installed`                                                                                           | Docker missing or daemon stopped                                                                             | Install Docker, then `sudo systemctl start docker` (or open Docker Desktop)                                                                                                         |
 | `--hosted requires a docker-compose.yml or compose.yml in the project`                                                               | No compose file at project root                                                                              | Add a compose file, or drop `--hosted` and audit statically                                                                                                                         |
 | `All discovered hosted HTTP services are unhealthy or unreachable`                                                                   | Every discovered hosted HTTP target failed its Compose health status or HTTP probe                           | Check `docker compose ps`, service logs, healthchecks, and the service root HTTP paths before spending DAST scan iterations                                                         |
