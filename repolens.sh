@@ -551,8 +551,13 @@ while [[ $# -gt 0 ]]; do
       ;;
     --remote-label)
       [[ $# -ge 2 ]] || die "Option --remote-label requires a text argument."
-      REMOTE_LABEL="$2"
-      shift 2
+      shift
+      REMOTE_LABEL="$1"
+      shift
+      while [[ $# -gt 0 && "$1" != --* ]]; do
+        REMOTE_LABEL+=" $1"
+        shift
+      done
       ;;
     --yes|-y)
       AUTO_YES=true
@@ -1763,6 +1768,27 @@ print_android_deploy_preview() {
   echo "  Agent:      $AGENT"
 }
 
+remote_target_display() {
+  local display="${REMOTE_HOST}:${REMOTE_PORT}"
+  [[ -n "${REMOTE_USER:-}" ]] && display="${REMOTE_USER}@${display}"
+  printf '%s' "$display"
+}
+
+print_remote_confirmation_context() {
+  [[ -n "${REMOTE_TARGET:-}" ]] || return 0
+
+  local socket_display="${REPOLENS_REMOTE_SSH_SOCKET:-<socket>}"
+  [[ "$socket_display" == "none" ]] && socket_display="<socket>"
+
+  if [[ -n "${REMOTE_LABEL:-}" ]]; then
+    echo "Remote target: ${REMOTE_LABEL}"
+    echo "Raw target: ${REMOTE_TARGET}"
+  else
+    echo "Remote target: $(remote_target_display)"
+  fi
+  echo "Local commands will be wrapped in: ssh -S ${socket_display} ${REMOTE_TARGET} '...'"
+}
+
 confirm_run() {
   if $AUTO_YES; then
     return 0
@@ -1783,6 +1809,7 @@ confirm_run() {
   echo ""
   echo "=== RepoLens Confirmation ==="
   echo "Target repo:  $REPO_OWNER/$REPO_NAME"
+  print_remote_confirmation_context
   echo "Mode:         $MODE"
   echo "Agent:        $AGENT"
   echo "Lenses:       $TOTAL_LENSES"
@@ -1847,6 +1874,8 @@ confirm_deploy_authorization() {
     echo "(e.g., systemctl, journalctl, ss, df)."
   fi
   echo ""
+  print_remote_confirmation_context
+  [[ -n "${REMOTE_TARGET:-}" ]] && echo ""
   echo "WARNING: Running this against infrastructure you do not own or"
   echo "are not authorized to audit may violate computer crime laws,"
   echo "including §202a StGB (DE), the Computer Fraud and Abuse Act (US),"
@@ -1910,14 +1939,11 @@ if $DRY_RUN; then
   echo "Rounds:      $ROUNDS"
   echo "Lenses:       $TOTAL_LENSES"
   if [[ -n "$REMOTE_TARGET" ]]; then
-    _remote_display="${REMOTE_HOST}:${REMOTE_PORT}"
-    [[ -n "$REMOTE_USER" ]] && _remote_display="${REMOTE_USER}@${_remote_display}"
     if [[ -n "$REMOTE_KEY" ]]; then
-      echo "Remote target: ${_remote_display} (key: $REMOTE_KEY)"
+      echo "Remote target: $(remote_target_display) (key: $REMOTE_KEY)"
     else
-      echo "Remote target: ${_remote_display}"
+      echo "Remote target: $(remote_target_display)"
     fi
-    unset _remote_display
   fi
   if $LOCAL_MODE; then
     echo "Output:       local markdown ($OUTPUT_DIR)"
