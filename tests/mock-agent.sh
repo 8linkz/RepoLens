@@ -117,6 +117,49 @@ emit_manifest() {
   '
 }
 
+emit_filing_sentinel() {
+  local prompt="$1" run_id cluster_id log_base filed_dir
+
+  log_role "filing"
+  run_id="$(extract_first_match 'This run is `([^`]+)`' "$prompt")"
+  cluster_id="$(extract_first_match 'FILING AGENT for cluster `([^`]+)`' "$prompt")"
+  [[ -n "$run_id" ]] || run_id="mock-run"
+  [[ -n "$cluster_id" ]] || cluster_id="mock-round-handoff"
+
+  filed_dir=""
+  if [[ "${REPOLENS_MOCK_IGNORE_LOG_BASE:-0}" != "1" && -n "${LOG_BASE:-}" ]]; then
+    filed_dir="$LOG_BASE/final/filed"
+  else
+    filed_dir="$(extract_first_match 'Write exactly one sentinel under `([^`]+/final/filed)/`' "$prompt")"
+  fi
+  [[ -n "$filed_dir" ]] || filed_dir="logs/$run_id/final/filed"
+  mkdir -p "$filed_dir"
+
+  if [[ "${REPOLENS_MOCK_FILING_DEDUP:-0}" == "1" ]]; then
+    printf 'DEDUP_HIT: #204\n' > "$filed_dir/$cluster_id.failed"
+    rm -f "$filed_dir/$cluster_id.lock"
+    printf 'DONE\nWrote %s.failed\nDONE\n' "$cluster_id"
+    return 0
+  fi
+
+  if [[ "${REPOLENS_MOCK_FILING_FAIL:-0}" == "1" ]]; then
+    printf 'VERIFICATION_FAILED: mock filing failure\n' > "$filed_dir/$cluster_id.failed"
+    rm -f "$filed_dir/$cluster_id.lock"
+    printf 'DONE\nWrote %s.failed\nDONE\n' "$cluster_id"
+    return 0
+  fi
+
+  if [[ "${REPOLENS_MOCK_FILING_MISSING:-0}" == "1" ]]; then
+    rm -f "$filed_dir/$cluster_id.lock"
+    printf 'DONE\nWrote no sentinel for %s\nDONE\n' "$cluster_id"
+    return 0
+  fi
+
+  printf 'https://example.invalid/issues/%s\n' "$cluster_id" > "$filed_dir/$cluster_id.url"
+  rm -f "$filed_dir/$cluster_id.lock"
+  printf 'DONE\nWrote %s.url\nDONE\n' "$cluster_id"
+}
+
 emit_lens_findings() {
   local prompt="$1" output_dir round_dir capture_dir domain lens round findings_count i title slug file
 
@@ -184,7 +227,9 @@ main() {
   local prompt
   prompt="$(read_prompt "$@")"
 
-  if [[ "$prompt" == *"RepoLens Synthesizer"* ]]; then
+  if [[ "$prompt" == *"FILING AGENT"* ]]; then
+    emit_filing_sentinel "$prompt"
+  elif [[ "$prompt" == *"RepoLens Synthesizer"* ]]; then
     emit_manifest "$prompt"
   elif [[ "$prompt" == *"META-ORCHESTRATOR"* ]]; then
     emit_meta_dispatch

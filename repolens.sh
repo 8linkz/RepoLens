@@ -1273,6 +1273,8 @@ FORGE_REPO_SLUG="$(forge_remote_repo_slug "$_origin_url")"
 if [[ -z "$FORGE_REPO_SLUG" ]]; then
   FORGE_REPO_SLUG="$REPO_OWNER/$REPO_NAME"
 fi
+FORGE_REPO="$FORGE_REPO_SLUG"
+export FORGE_REPO
 
 # --- Resolve and validate forge provider ---
 if [[ -n "$FORGE_PROVIDER" ]]; then
@@ -1309,6 +1311,7 @@ fi
 
 # --- Directories ---
 LOG_BASE="$SCRIPT_DIR/logs/$RUN_ID"
+export LOG_BASE
 mkdir -p "$LOG_BASE"
 HEARTBEAT_DIR="$LOG_BASE/.heartbeat"
 mkdir -p "$HEARTBEAT_DIR"
@@ -2589,6 +2592,50 @@ if [[ "$RUN_ROUNDS_RC" -eq 0 && "${ROUNDS:-1}" -gt 1 ]]; then
   log_info "Synthesizer: consolidating multi-round findings"
   if run_synthesizer "$RUN_ID"; then
     log_info "Synthesizer: manifest.json promoted"
+    if ! $LOCAL_MODE; then
+      log_info "Filing: dispatching synthesized manifest"
+      filing_output=""
+      if filing_output="$(dispatch_filing_batch "$RUN_ID" 2>&1)"; then
+        while IFS= read -r filing_line; do
+          [[ -n "$filing_line" ]] && log_info "Filing: $filing_line"
+        done <<< "$filing_output"
+
+        filing_missing=0
+        filing_failed=0
+        filing_dedup=0
+        manifest_path="$LOG_BASE/final/manifest.json"
+        filed_dir="$LOG_BASE/final/filed"
+        while IFS= read -r filing_cluster_id; do
+          [[ -n "$filing_cluster_id" ]] || continue
+          if [[ -e "$filed_dir/$filing_cluster_id.url" ]]; then
+            continue
+          fi
+          if [[ -e "$filed_dir/$filing_cluster_id.failed" ]]; then
+            filing_failed_first_line="$(head -n 1 "$filed_dir/$filing_cluster_id.failed" 2>/dev/null || true)"
+            if [[ "$filing_failed_first_line" == DEDUP_HIT:* ]]; then
+              filing_dedup=$((filing_dedup + 1))
+            else
+              filing_failed=$((filing_failed + 1))
+            fi
+          else
+            filing_missing=$((filing_missing + 1))
+          fi
+        done < <(jq -r '.[].cluster_id' "$manifest_path")
+
+        if (( filing_failed > 0 || filing_missing > 0 )); then
+          log_warn "Filing: incomplete batch (failed=$filing_failed, dedup=$filing_dedup, missing=$filing_missing)"
+          RUN_ROUNDS_RC=1
+        else
+          log_info "Filing: batch complete"
+        fi
+      else
+        while IFS= read -r filing_line; do
+          [[ -n "$filing_line" ]] && log_warn "Filing: $filing_line"
+        done <<< "$filing_output"
+        log_warn "Filing: failed to dispatch synthesized manifest"
+        RUN_ROUNDS_RC=1
+      fi
+    fi
   else
     log_warn "Synthesizer: failed to produce a valid manifest"
     RUN_ROUNDS_RC=1

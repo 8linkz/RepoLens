@@ -286,6 +286,8 @@ _filing_real_agent() {
   forge_label_create_esc="${forge_label_create_esc//|/\\|}"
   local forge_issue_list_open_esc="${forge_issue_list_open//\\/\\\\}"
   forge_issue_list_open_esc="${forge_issue_list_open_esc//|/\\|}"
+  local filed_dir_esc="${filed_dir//\\/\\\\}"
+  filed_dir_esc="${filed_dir_esc//|/\\|}"
 
   local vars
   vars="RUN_ID=$run_id"
@@ -295,6 +297,7 @@ _filing_real_agent() {
   vars+="|PROJECT_PATH=$project_path"
   vars+="|CLUSTER_MANIFEST_ENTRY=$entry_esc"
   vars+="|SOURCE_FINDINGS=$source_findings_esc"
+  vars+="|FILED_DIR=$filed_dir_esc"
   vars+="|FORGE_ISSUE_CREATE=$forge_issue_create_esc"
   vars+="|FORGE_LABEL_CREATE=$forge_label_create_esc"
   vars+="|FORGE_ISSUE_LIST_OPEN=$forge_issue_list_open_esc"
