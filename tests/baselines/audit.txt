@@ -1,7 +1,7 @@
 [INFO] [<TIMESTAMP>] RepoLens run <RUN_ID> starting
 [INFO] [<TIMESTAMP>] Project: <TMP_RUN_DIR>/<PROJECT_TAIL> (local/<PROJECT_TAIL>)
 [INFO] [<TIMESTAMP>] Agent: codex | Mode: audit | Parallel: false
-[INFO] [<TIMESTAMP>] Agent timeout: 600s
+[INFO] [<TIMESTAMP>] Agent timeout: 1800s
 [INFO] [<TIMESTAMP>] Agent timeout kill grace: 30s
 [INFO] [<TIMESTAMP>] Lens wall-clock budget: 3600s
 [INFO] [<TIMESTAMP>] Local mode: writing local markdown files to <TMP_RUN_DIR>/issues-audit

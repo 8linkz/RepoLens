@@ -425,7 +425,8 @@ forge_auth_status() {
 #         with stderr suppressed and exit ignored.
 #
 #   All three args are required; any missing arg is a caller bug and
-#   dies loudly rather than pass garbage to the forge CLI.
+#   dies loudly rather than pass garbage to the forge CLI. Unknown
+#   providers are treated like other best-effort failures: warn and no-op.
 #
 #   Depends on die() from lib/core.sh.
 forge_label_create() {
@@ -454,7 +455,8 @@ forge_label_create() {
       fj -H "$FORGE_HOST" repo labels "$repo" create "$label" "$color" 2>/dev/null || true
       ;;
     *)
-      die "forge_label_create: unknown provider '${FORGE_PROVIDER:-}' (expected gh|tea|fj)"
+      _forge_warn "forge_label_create: unknown provider '${FORGE_PROVIDER:-}' (expected gh|tea|fj)"
+      return 0
       ;;
   esac
 }
@@ -599,7 +601,8 @@ forge_issue_list_count() {
       return 1
       ;;
     *)
-      die "forge_issue_list_count: unknown provider '${FORGE_PROVIDER:-}' (expected gh|tea|fj)"
+      _forge_warn "forge_issue_list_count: unknown provider '${FORGE_PROVIDER:-}' (expected gh|tea|fj)"
+      return 1
       ;;
   esac
 }
@@ -831,10 +834,10 @@ _forge_rate_limit_sleep_secs() {
   printf '%s' "$secs"
 }
 
-# Internal: delegates to log_warn when logging.sh is sourced, otherwise
-# falls back to stderr so forge wrappers remain usable in library-level tests.
+# Internal: delegates to RepoLens log_warn when logging.sh is sourced,
+# otherwise falls back to stderr so wrappers remain usable in standalone tests.
 _forge_warn() {
-  if declare -F log_warn >/dev/null 2>&1; then
+  if declare -F log_warn >/dev/null 2>&1 && [[ -n "${_REPOLENS_LOG_FILE+x}" ]]; then
     log_warn "$*"
   else
     printf '[WARN] %s\n' "$*" >&2

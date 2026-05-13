@@ -26,6 +26,8 @@
 #     Run 'gh auth login'.").
 #   - forge_label_create's gh branch must SWALLOW non-zero exits (|| true)
 #     — labels are best-effort, matching the pre-refactor inline call.
+#   - forge_label_create must also treat an empty/unknown provider as a
+#     best-effort no-op: warn, return 0, and avoid calling any forge CLI.
 #   - Acceptance regression guard: `grep -rnE '\bgh (auth|label) '
 #     repolens.sh` returns no lines (no stray direct calls remain).
 #
@@ -142,6 +144,8 @@ chmod +x "$FAKE_BIN/fj"
 # stdout+stderr. The caller asserts on rc via $?.
 #
 # Args: <provider> <fn> [fn-args...]
+# Environment exports are intentionally local to wrapper subshells.
+# shellcheck disable=SC2030,SC2031
 run_wrapper() {
   local provider="$1"; shift
   local fn="$1"; shift
@@ -169,6 +173,58 @@ run_wrapper() {
     set -uo pipefail
     # shellcheck source=/dev/null
     source "$SCRIPT_DIR/lib/core.sh"
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/lib/forge.sh"
+    "$fn" "$@"
+  ) 2>&1
+}
+
+# Environment exports are intentionally local to wrapper subshells.
+# shellcheck disable=SC2030,SC2031
+run_wrapper_with_uninitialized_log_warn() {
+  local provider="$1"; shift
+  local fn="$1"; shift
+  (
+    export PATH="$FAKE_BIN:/usr/bin:/bin:$PATH"
+    export FORGE_PROVIDER="$provider"
+    [[ -n "${FORGE_PROJECT_PATH+x}" ]] && export FORGE_PROJECT_PATH
+    [[ -n "${FORGE_REMOTE_NAME+x}" ]] && export FORGE_REMOTE_NAME
+    [[ -n "${FORGE_HOST+x}" ]] && export FORGE_HOST
+    [[ -n "${REPOLENS_FAKE_LOG_WARN_CALLS+x}" ]] && export REPOLENS_FAKE_LOG_WARN_CALLS
+    set -uo pipefail
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/lib/core.sh"
+    # Loaded indirectly by forge warning dispatch when initialized.
+    # shellcheck disable=SC2329
+    log_warn() {
+      printf 'called:%s\n' "$_REPOLENS_LOG_FILE" >> "$REPOLENS_FAKE_LOG_WARN_CALLS"
+    }
+    unset _REPOLENS_LOG_FILE
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/lib/forge.sh"
+    "$fn" "$@"
+  ) 2>&1
+}
+
+# Environment exports are intentionally local to wrapper subshells.
+# shellcheck disable=SC2030,SC2031
+run_wrapper_with_initialized_logging() {
+  local provider="$1"; shift
+  local run_id="$1"; shift
+  local log_base="$1"; shift
+  local fn="$1"; shift
+  (
+    export PATH="$FAKE_BIN:/usr/bin:/bin:$PATH"
+    export FORGE_PROVIDER="$provider"
+    [[ -n "${FORGE_PROJECT_PATH+x}" ]] && export FORGE_PROJECT_PATH
+    [[ -n "${FORGE_REMOTE_NAME+x}" ]] && export FORGE_REMOTE_NAME
+    [[ -n "${FORGE_HOST+x}" ]] && export FORGE_HOST
+    set -uo pipefail
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/lib/core.sh"
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/lib/logging.sh"
+    init_logging "$run_id" "$log_base"
     # shellcheck source=/dev/null
     source "$SCRIPT_DIR/lib/forge.sh"
     "$fn" "$@"
@@ -306,6 +362,70 @@ echo "Test 10: forge_label_create with empty color → dies on missing-arg guard
 out="$(run_wrapper gh forge_label_create my-label "" owner/repo)"
 rc=$?
 assert_rc_nonzero "forge_label_create with empty color exits non-zero" "$rc"
+
+# Test 10b: provider guard for best-effort label creation. Unknown
+# providers should not turn local/no-origin runs into hard failures, and
+# should not accidentally dispatch to any installed forge CLI.
+echo ""
+echo "Test 10b: forge_label_create with empty provider → rc=0, warning, no CLI call"
+GH_LOG="$TMPDIR/gh_test10b.log"
+TEA_LOG="$TMPDIR/tea_test10b.log"
+FJ_LOG="$TMPDIR/fj_test10b.log"
+: > "$GH_LOG"
+: > "$TEA_LOG"
+: > "$FJ_LOG"
+REPOLENS_FAKE_GH_LOG="$GH_LOG" \
+REPOLENS_FAKE_TEA_LOG="$TEA_LOG" \
+REPOLENS_FAKE_FJ_LOG="$FJ_LOG" \
+  out="$(run_wrapper "" forge_label_create my-label abcdef owner/repo)"
+rc=$?
+assert_rc_zero "forge_label_create empty provider is a best-effort no-op" "$rc"
+assert_contains "empty provider warning mentions unknown provider" "unknown provider" "$out"
+assert_eq "empty provider does not call gh" "" "$(cat "$GH_LOG")"
+assert_eq "empty provider does not call tea" "" "$(cat "$TEA_LOG")"
+assert_eq "empty provider does not call fj" "" "$(cat "$FJ_LOG")"
+
+echo ""
+echo "Test 10c: forge_label_create with unknown provider → rc=0, warning, no CLI call"
+GH_LOG="$TMPDIR/gh_test10c.log"
+TEA_LOG="$TMPDIR/tea_test10c.log"
+FJ_LOG="$TMPDIR/fj_test10c.log"
+: > "$GH_LOG"
+: > "$TEA_LOG"
+: > "$FJ_LOG"
+REPOLENS_FAKE_GH_LOG="$GH_LOG" \
+REPOLENS_FAKE_TEA_LOG="$TEA_LOG" \
+REPOLENS_FAKE_FJ_LOG="$FJ_LOG" \
+  out="$(run_wrapper unknown forge_label_create my-label abcdef owner/repo)"
+rc=$?
+assert_rc_zero "forge_label_create unknown provider is a best-effort no-op" "$rc"
+assert_contains "unknown provider warning includes provider value" "unknown provider 'unknown'" "$out"
+assert_eq "unknown provider does not call gh" "" "$(cat "$GH_LOG")"
+assert_eq "unknown provider does not call tea" "" "$(cat "$TEA_LOG")"
+assert_eq "unknown provider does not call fj" "" "$(cat "$FJ_LOG")"
+
+echo ""
+echo "Test 10d: forge_label_create warning falls back when log_warn is uninitialized"
+LOG_WARN_CALLS="$TMPDIR/log_warn_test10d.log"
+: > "$LOG_WARN_CALLS"
+REPOLENS_FAKE_LOG_WARN_CALLS="$LOG_WARN_CALLS" \
+  out="$(run_wrapper_with_uninitialized_log_warn unknown forge_label_create my-label abcdef owner/repo)"
+rc=$?
+assert_rc_zero "uninitialized log_warn does not break best-effort warning" "$rc"
+assert_contains "fallback warning is still emitted" "[WARN] forge_label_create: unknown provider 'unknown'" "$out"
+assert_eq "uninitialized log_warn was not called" "" "$(cat "$LOG_WARN_CALLS")"
+
+echo ""
+echo "Test 10e: forge_label_create warning uses initialized RepoLens logging"
+LOG_BASE="$TMPDIR/logging_test10e"
+RUN_ID="forge-warning"
+out="$(run_wrapper_with_initialized_logging unknown "$RUN_ID" "$LOG_BASE" forge_label_create my-label abcdef owner/repo)"
+rc=$?
+log_contents="$(cat "$LOG_BASE/$RUN_ID.log")"
+assert_rc_zero "initialized logging path remains a best-effort no-op" "$rc"
+assert_contains "stderr warning is emitted through log_warn" "[WARN] [" "$out"
+assert_contains "stderr warning names the wrapper" "forge_label_create: unknown provider 'unknown'" "$out"
+assert_contains "log file records the warning" "forge_label_create: unknown provider 'unknown'" "$log_contents"
 
 # ---------------------------------------------------------------------------
 # Group 3: acceptance regression guard

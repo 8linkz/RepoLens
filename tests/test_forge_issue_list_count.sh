@@ -19,8 +19,8 @@
 #   - lib/forge.sh exports forge_issue_list_count <owner/repo> <label>.
 #   - The gh branch counts open issues through `gh issue list ... --json number`
 #     and prints the integer count on stdout.
-#   - gh/jq failures print nothing to stdout and return non-zero so callers do
-#     not collapse "unknown" into "0".
+#   - gh/jq failures and unsupported providers print nothing to stdout and
+#     return non-zero so callers do not collapse "unknown" into "0".
 #   - tea is implemented by issue #61 with the same count/failure contract;
 #     fj is implemented by issue #62 through host-scoped `fj issue search`
 #     output parsing.
@@ -152,6 +152,8 @@ exit "${REPOLENS_FAKE_FJ_RC:-0}"
 SH
 chmod +x "$FAKE_BIN/fj"
 
+# Environment exports are intentionally local to wrapper subshells.
+# shellcheck disable=SC2030,SC2031
 run_wrapper() {
   local provider="$1"; shift
   local fn="$1"; shift
@@ -180,6 +182,33 @@ run_wrapper() {
     # shellcheck source=/dev/null
     source "$SCRIPT_DIR/lib/forge.sh"
     "$fn" "$@"
+  )
+}
+
+# Environment exports are intentionally local to wrapper subshells.
+# shellcheck disable=SC2030,SC2031
+run_wrapper_with_return_marker() {
+  local provider="$1"; shift
+  local fn="$1"; shift
+  (
+    export PATH="$FAKE_BIN:/usr/bin:/bin:$PATH"
+    export FORGE_PROVIDER="$provider"
+    [[ -n "${FORGE_PROJECT_PATH+x}" ]] && export FORGE_PROJECT_PATH
+    [[ -n "${FORGE_REMOTE_NAME+x}" ]] && export FORGE_REMOTE_NAME
+    [[ -n "${FORGE_TEA_LOGIN+x}" ]] && export FORGE_TEA_LOGIN
+    [[ -n "${FORGE_HOST+x}" ]] && export FORGE_HOST
+    [[ -n "${REPOLENS_FAKE_GH_LOG+x}" ]] && export REPOLENS_FAKE_GH_LOG
+    [[ -n "${REPOLENS_FAKE_TEA_LOG+x}" ]] && export REPOLENS_FAKE_TEA_LOG
+    [[ -n "${REPOLENS_FAKE_FJ_LOG+x}" ]] && export REPOLENS_FAKE_FJ_LOG
+    set -uo pipefail
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/lib/core.sh"
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/lib/forge.sh"
+    "$fn" "$@"
+    local wrapper_rc=$?
+    printf '__WRAPPER_RETURNED_RC=%s\n' "$wrapper_rc" >&2
+    exit "$wrapper_rc"
   )
 }
 
@@ -393,12 +422,56 @@ assert_eq "fj branch passes supported issue-search flags in order" \
   "-H codeberg.org --style minimal issue search --repo owner/repo --labels audit:demo --state open" "$logged"
 
 echo ""
-echo "Test 10: empty FORGE_PROVIDER dies through the default arm"
+echo "Test 10: empty FORGE_PROVIDER returns non-zero without invoking a forge CLI"
 reset_fake_gh
-out="$(run_wrapper "" forge_issue_list_count owner/repo audit:demo 2>&1)"
+reset_fake_tea
+reset_fake_fj
+gh_log="$TMPDIR/t10-gh.log"
+tea_log="$TMPDIR/t10-tea.log"
+fj_log="$TMPDIR/t10-fj.log"
+: > "$gh_log"
+: > "$tea_log"
+: > "$fj_log"
+REPOLENS_FAKE_GH_LOG="$gh_log"
+REPOLENS_FAKE_TEA_LOG="$tea_log"
+REPOLENS_FAKE_FJ_LOG="$fj_log"
+err_file="$TMPDIR/t10.err"
+out="$(run_wrapper_with_return_marker "" forge_issue_list_count owner/repo audit:demo 2>"$err_file")"
 rc=$?
-assert_rc_nonzero "empty provider exits non-zero" "$rc"
-assert_contains "empty provider reports unknown provider" "unknown provider" "$out"
+err="$(cat "$err_file")"
+assert_rc_nonzero "empty provider failure is observable to caller" "$rc"
+assert_eq "stdout is empty for empty provider" "" "$out"
+assert_contains "warning reports unknown provider" "unknown provider" "$err"
+assert_contains "empty provider returns instead of exiting the shell" "__WRAPPER_RETURNED_RC=1" "$err"
+assert_log_empty "empty provider does not call gh" "$gh_log"
+assert_log_empty "empty provider does not call tea" "$tea_log"
+assert_log_empty "empty provider does not call fj" "$fj_log"
+
+echo ""
+echo "Test 10b: unknown FORGE_PROVIDER returns non-zero without invoking a forge CLI"
+reset_fake_gh
+reset_fake_tea
+reset_fake_fj
+gh_log="$TMPDIR/t10b-gh.log"
+tea_log="$TMPDIR/t10b-tea.log"
+fj_log="$TMPDIR/t10b-fj.log"
+: > "$gh_log"
+: > "$tea_log"
+: > "$fj_log"
+REPOLENS_FAKE_GH_LOG="$gh_log"
+REPOLENS_FAKE_TEA_LOG="$tea_log"
+REPOLENS_FAKE_FJ_LOG="$fj_log"
+err_file="$TMPDIR/t10b.err"
+out="$(run_wrapper_with_return_marker unknown forge_issue_list_count owner/repo audit:demo 2>"$err_file")"
+rc=$?
+err="$(cat "$err_file")"
+assert_rc_nonzero "unknown provider failure is observable to caller" "$rc"
+assert_eq "stdout is empty for unknown provider" "" "$out"
+assert_contains "warning includes provider value" "unknown provider 'unknown'" "$err"
+assert_contains "unknown provider returns instead of exiting the shell" "__WRAPPER_RETURNED_RC=1" "$err"
+assert_log_empty "unknown provider does not call gh" "$gh_log"
+assert_log_empty "unknown provider does not call tea" "$tea_log"
+assert_log_empty "unknown provider does not call fj" "$fj_log"
 
 echo ""
 echo "Test 11: missing repo argument dies before invoking gh"
