@@ -332,6 +332,43 @@ assert_contains "rate-limited triage transcript preserves agent output" "usage l
 assert_file_exists "rate-limited triage creates abort sentinel" "$LOG_BASE/.rate-limit-abort"
 assert_eq "rate-limited triage records phase stop reason" "rate-limited-triage" "$(jq -r '.stopped_reason' "$SUMMARY_FILE")"
 assert_file_missing "rate-limited triage does not promote context pack" "$TRIAGE_DIR/context-pack.md"
+
+# Case 6c: a structured Claude rate-limit envelope with rc=0 must use the
+# same phase rate-limit path instead of accepting the valid-looking result.
+RUN_ID="test-run-214-triage-structured-rate-limit"
+LOG_BASE="$TMPDIR/logs/$RUN_ID"
+TRIAGE_DIR="$LOG_BASE/triage"
+SUMMARY_FILE="$LOG_BASE/summary.json"
+mkdir -p "$LOG_BASE"
+printf '{"stopped_reason":null,"lenses":[]}\n' > "$SUMMARY_FILE"
+export RUN_ID LOG_BASE SUMMARY_FILE
+run_agent() {
+  local envelope_path="${6:-${REPOLENS_AGENT_ENVELOPE_FILE:-}}"
+  if [[ -n "$envelope_path" ]]; then
+    mkdir -p "$(dirname "$envelope_path")"
+    cat > "$envelope_path" <<'JSON'
+{"result":"# Triage context pack\n\n## Mentioned files\n- sample.go\n\n## Initial hypothesis tree\n1. This result should not be promoted.\nDONE\n","is_error":true,"api_error_status":429,"error":{"type":"rate_limit_error","message":"rate limited"}}
+JSON
+  fi
+  cat <<'PACK'
+# Triage context pack
+
+## Mentioned files
+- sample.go
+
+## Initial hypothesis tree
+1. This result should not be promoted.
+DONE
+PACK
+  return 0
+}
+run_triage "$RUN_ID" >"$TMPDIR/structured-rate-limit.out" 2>"$TMPDIR/structured-rate-limit.err"
+status=$?
+assert_eq "structured rc=0 rate-limited triage returns distinct rc" "3" "$status"
+assert_file_exists "structured rate-limited triage writes transcript" "$TRIAGE_DIR/transcript.txt"
+assert_file_exists "structured rate-limited triage creates abort sentinel" "$LOG_BASE/.rate-limit-abort"
+assert_eq "structured rate-limited triage records phase stop reason" "rate-limited-triage" "$(jq -r '.stopped_reason' "$SUMMARY_FILE")"
+assert_file_missing "structured rate-limited triage does not promote context pack" "$TRIAGE_DIR/context-pack.md"
 RUN_ID="test-run-171"
 LOG_BASE="$TMPDIR/logs/$RUN_ID"
 TRIAGE_DIR="$LOG_BASE/triage"

@@ -232,7 +232,7 @@ resolve_lens_max_wall() {
   printf '%s\n' "$((10#$value))"
 }
 
-# Usage: run_agent <agent> <prompt> <project_path> [timeout_secs] [kill_grace_secs]
+# Usage: run_agent <agent> <prompt> <project_path> [timeout_secs] [kill_grace_secs] [envelope_file]
 #
 # Executes the given agent inside the target repository directory.
 # The work happens in a subshell so the caller's cwd is never affected.
@@ -243,6 +243,7 @@ run_agent() {
   local project_path="$3"
   local timeout_secs="${4:-}"
   local kill_grace_secs="${5:-${REPOLENS_AGENT_KILL_GRACE:-30}}"
+  local envelope_file="${6:-${REPOLENS_AGENT_ENVELOPE_FILE:-}}"
 
   if [[ -z "$timeout_secs" ]]; then
     timeout_secs="$(resolve_agent_timeout "${MODE:-audit}" "$agent")"
@@ -263,7 +264,27 @@ run_agent() {
 
     case "$agent" in
       claude)
-        timeout --kill-after="${kill_grace_secs}s" "${timeout_secs}s" claude --dangerously-skip-permissions -p "$prompt"
+        local raw raw_json rc
+        raw="$(
+          timeout --kill-after="${kill_grace_secs}s" "${timeout_secs}s" claude --dangerously-skip-permissions --output-format json -p "$prompt" 2>&1
+        )"
+        rc=$?
+
+        raw_json="$raw"
+        if command -v jq >/dev/null 2>&1 && ! printf '%s' "$raw_json" | jq -e 'type == "object"' >/dev/null 2>&1; then
+          raw_json="${raw//$'\n'/\\n}"
+        fi
+
+        if command -v jq >/dev/null 2>&1 && printf '%s' "$raw_json" | jq -e 'type == "object"' >/dev/null 2>&1; then
+          if [[ -n "$envelope_file" ]]; then
+            mkdir -p "$(dirname "$envelope_file")" 2>/dev/null || true
+            printf '%s' "$raw_json" > "$envelope_file" 2>/dev/null || true
+          fi
+          printf '%s' "$raw_json" | jq -r '.result // ""' 2>/dev/null || true
+        else
+          printf '%s' "$raw"
+        fi
+        return "$rc"
         ;;
       codex)
         timeout --kill-after="${kill_grace_secs}s" "${timeout_secs}s" codex exec --yolo "$prompt"

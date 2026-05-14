@@ -760,4 +760,56 @@ assert_file_missing "rate-limited synthesizer removes stale manifest" "$RUN_LOG/
 assert_file_missing "rate-limited synthesizer removes stale preserved cross-link actions" "$RUN_LOG/final/cross-link-actions.preserved.json"
 unset SUMMARY_FILE
 
+# Failure path: structured Claude rate-limit envelopes with rc=0 must take the
+# same phase abort path instead of promoting the valid-looking manifest result.
+: > "$COMPOSE_LOG"
+: > "$AGENT_LOG"
+stub_compose_prompt
+run_agent() {
+  echo "call" >> "$AGENT_LOG"
+  local envelope_path="${6:-${REPOLENS_AGENT_ENVELOPE_FILE:-}}"
+  if [[ -n "$envelope_path" ]]; then
+    mkdir -p "$(dirname "$envelope_path")"
+    cat > "$envelope_path" <<'JSON'
+{"result":"[{\"cluster_id\":\"structured-rate-limit::1\",\"title\":\"[high] This manifest must not be promoted\",\"severity\":\"high\",\"domain\":\"code\",\"lens\":\"input-validation\",\"root_cause_category\":\"missing-validation\",\"source_finding_paths\":[\"logs/run-1/rounds/round-1/lens-outputs/code/input-validation.md\"],\"dedup_against_existing\":[],\"proposed_labels\":[\"bug\"],\"cross_link_actions\":[],\"granularity\":\"independent\",\"body\":\"body\"}]\nDONE\n","is_error":true,"api_error_status":429,"error":{"type":"rate_limit_error","message":"rate limited"}}
+JSON
+  fi
+  cat <<'JSON'
+[
+  {
+    "cluster_id": "structured-rate-limit::1",
+    "title": "[high] This manifest must not be promoted",
+    "severity": "high",
+    "domain": "code",
+    "lens": "input-validation",
+    "root_cause_category": "missing-validation",
+    "source_finding_paths": ["logs/run-1/rounds/round-1/lens-outputs/code/input-validation.md"],
+    "dedup_against_existing": [],
+    "proposed_labels": ["bug"],
+    "cross_link_actions": [],
+    "granularity": "independent",
+    "body": "body"
+  }
+]
+DONE
+JSON
+  return 0
+}
+setup_run "run-structured-rate-limit"
+SUMMARY_FILE="$RUN_LOG/summary.json"
+mkdir -p "$RUN_LOG/final"
+printf '{"stopped_reason":null,"lenses":[]}\n' > "$SUMMARY_FILE"
+echo '[]' > "$RUN_LOG/final/manifest.json"
+echo '[]' > "$RUN_LOG/final/cross-link-actions.preserved.json"
+export SUMMARY_FILE
+run_synthesizer "run-structured-rate-limit" 2>"$TMPDIR/run-structured-rate-limit.err"
+status=$?
+assert_eq "structured rc=0 rate-limited synthesizer returns distinct rc" "3" "$status"
+assert_file_exists "structured rate-limited synthesizer writes transcript" "$RUN_LOG/final/synthesizer-output.txt"
+assert_file_exists "structured rate-limited synthesizer creates abort sentinel" "$RUN_LOG/.rate-limit-abort"
+assert_eq "structured rate-limited synthesizer records phase stop reason" "rate-limited-synthesizer" "$(jq -r '.stopped_reason' "$SUMMARY_FILE")"
+assert_file_missing "structured rate-limited synthesizer removes stale manifest" "$RUN_LOG/final/manifest.json"
+assert_file_missing "structured rate-limited synthesizer removes stale preserved cross-link actions" "$RUN_LOG/final/cross-link-actions.preserved.json"
+unset SUMMARY_FILE
+
 finish

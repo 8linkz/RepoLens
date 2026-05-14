@@ -2413,6 +2413,9 @@ run_lens() {
     local timestamp
     timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
     local output_file="$lens_log_dir/iteration-${iteration}-${timestamp}.txt"
+    local envelope_file="$output_file.envelope.json"
+    local output_envelope_file
+    output_envelope_file="$LOG_BASE/output/$domain/$lens_id/$(basename "$output_file").envelope.json"
 
     log_info "[$domain/$lens_id] Iteration $iteration"
     if (( heartbeat_interval > 0 )); then
@@ -2426,7 +2429,11 @@ run_lens() {
       effective_timeout_secs="$remaining_wall_secs"
     fi
 
-    run_agent "$AGENT" "$prompt" "$PROJECT_PATH" "$effective_timeout_secs" "$AGENT_KILL_GRACE_SECS" >"$output_file" 2>&1 || agent_rc=$?
+    run_agent "$AGENT" "$prompt" "$PROJECT_PATH" "$effective_timeout_secs" "$AGENT_KILL_GRACE_SECS" "$envelope_file" >"$output_file" 2>&1 || agent_rc=$?
+    if [[ -s "$envelope_file" && "$output_envelope_file" != "$envelope_file" ]]; then
+      mkdir -p "$(dirname "$output_envelope_file")" 2>/dev/null || true
+      cp "$envelope_file" "$output_envelope_file" 2>/dev/null || true
+    fi
     if [[ "$agent_rc" -eq 124 ]]; then
       log_error "[$domain/$lens_id] agent timed out after ${effective_timeout_secs}s and exited during ${AGENT_KILL_GRACE_SECS}s grace on iteration $iteration"
     elif [[ "$agent_rc" -eq 137 ]]; then
@@ -2441,17 +2448,13 @@ run_lens() {
     # worth of no-op invocations. Checked BEFORE check_done so a rate-limited
     # agent cannot accidentally trip the DONE path.
     #
-    # Gate on agent_rc != 0 (issue #128): all supported agent CLIs exit
-    # non-zero on an upstream rate-limit / quota / auth error. A successful
-    # iteration (rc == 0) that happens to quote user code containing
-    # "usage limit" / "rate limit" / "try again in" is a finding, not an
-    # API failure — running the detector there produces false aborts that
-    # skip every remaining lens.
+    # Text fallback stays gated on agent_rc != 0 (issue #128), but Claude JSON
+    # envelopes can classify structured failures even when the CLI exits 0.
     local failure_class rl_hit rl_sig rl_snip
-    if [[ "$agent_rc" -ne 0 ]]; then
-      failure_class="$(classify_agent_iteration "$output_file" "$agent_rc" || printf '%s' "unknown")"
+    failure_class="$(classify_agent_iteration "$output_file" "$agent_rc" "$envelope_file" || printf '%s' "unknown")"
+    if [[ "$failure_class" != "unknown" ]]; then
       case "$failure_class" in
-        auth-expired|model-unavailable|budget-exhausted)
+        auth-expired|model-unavailable|budget-exhausted|agent-refused|max-tokens-truncation|agent-error)
           log_error "[$domain/$lens_id] Persistent agent failure: $failure_class. Aborting run."
           printf '%s\n' "$failure_class" > "$LOG_BASE/.systemic-failure-abort"
           exit_status="$failure_class"
@@ -2459,6 +2462,9 @@ run_lens() {
           ;;
         rate-limited)
           rl_hit="$(detect_agent_rate_limit "$output_file" || true)"
+          if [[ -z "$rl_hit" ]]; then
+            rl_hit="structured-envelope|Claude JSON envelope reported rate limit"
+          fi
           ;;
         *)
           rl_hit=""
@@ -2617,7 +2623,8 @@ run_lens() {
   record_lens "$SUMMARY_FILE" "$domain" "$lens_id" "$iteration" "$exit_status" "$lens_issues" "$rate_limit_sleep_seconds"
   if [[ "$exit_status" != "rate-limited" && "$exit_status" != "agent-no-progress" \
       && "$exit_status" != "auth-expired" && "$exit_status" != "model-unavailable" \
-      && "$exit_status" != "budget-exhausted" ]]; then
+      && "$exit_status" != "budget-exhausted" && "$exit_status" != "agent-refused" \
+      && "$exit_status" != "max-tokens-truncation" && "$exit_status" != "agent-error" ]]; then
     mark_lens_completed "$lens_entry"
   fi
 

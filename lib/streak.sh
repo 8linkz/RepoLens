@@ -158,13 +158,80 @@ detect_agent_rate_limit() {
   return 1
 }
 
-# classify_agent_iteration <output_file> <agent_rc>
+# classify_agent_envelope <envelope_file>
+#   Classifies a structured Claude JSON envelope when one is available.
+#   Prints "unknown" for missing, malformed, or successful envelopes.
+classify_agent_envelope() {
+  local envelope_file="${1:-}"
+  [[ -n "$envelope_file" && -s "$envelope_file" ]] || { printf '%s\n' "unknown"; return 0; }
+  command -v jq >/dev/null 2>&1 || { printf '%s\n' "unknown"; return 0; }
+  jq -e 'type == "object"' "$envelope_file" >/dev/null 2>&1 || { printf '%s\n' "unknown"; return 0; }
+
+  local subtype stop_reason is_error api_error_status terminal_reason error_type error_message envelope_signal
+  subtype="$(jq -r '.subtype // empty' "$envelope_file" 2>/dev/null || true)"
+  stop_reason="$(jq -r '.stop_reason // empty' "$envelope_file" 2>/dev/null || true)"
+  is_error="$(jq -r '.is_error // false' "$envelope_file" 2>/dev/null || true)"
+  api_error_status="$(jq -r '.api_error_status // empty' "$envelope_file" 2>/dev/null || true)"
+  terminal_reason="$(jq -r '.terminal_reason // empty' "$envelope_file" 2>/dev/null || true)"
+  error_type="$(jq -r '.error.type // empty' "$envelope_file" 2>/dev/null || true)"
+  error_message="$(jq -r '.error.message // empty' "$envelope_file" 2>/dev/null || true)"
+
+  case "$subtype" in
+    error_max_budget_usd)
+      printf '%s\n' "budget-exhausted"
+      return 0
+      ;;
+  esac
+
+  case "$stop_reason" in
+    refusal)
+      printf '%s\n' "agent-refused"
+      return 0
+      ;;
+    max_tokens)
+      printf '%s\n' "max-tokens-truncation"
+      return 0
+      ;;
+  esac
+
+  envelope_signal="$(printf '%s' "$api_error_status:$terminal_reason:$subtype:$error_type:$error_message" | tr '[:upper:]' '[:lower:]')"
+  case "$envelope_signal" in
+    *401*|*403*|*auth*|*permission*|*login*)
+      printf '%s\n' "auth-expired"
+      return 0
+      ;;
+    *429*|*rate*limit*|*quota*)
+      printf '%s\n' "rate-limited"
+      return 0
+      ;;
+    *model*)
+      printf '%s\n' "model-unavailable"
+      return 0
+      ;;
+  esac
+
+  if [[ "$is_error" == "true" ]]; then
+    printf '%s\n' "agent-error"
+  else
+    printf '%s\n' "unknown"
+  fi
+}
+
+# classify_agent_iteration <output_file> <agent_rc> [envelope_file]
 #   Classifies a failed agent iteration into the persistent classes that should
-#   abort the whole run, the existing rate-limit class, or unknown. Successful
-#   iterations are always unknown so findings that quote these phrases do not
-#   trip global abort handling.
+#   abort the whole run, the existing rate-limit class, or unknown. Text
+#   classification remains gated on non-zero exits so successful findings that
+#   quote these phrases do not trip global abort handling; structured envelope
+#   failures can classify even when the agent process exits 0.
 classify_agent_iteration() {
-  local file="$1" agent_rc="${2:-0}"
+  local file="$1" agent_rc="${2:-0}" envelope_file="${3:-}"
+  local envelope_class
+  envelope_class="$(classify_agent_envelope "$envelope_file" || printf '%s' "unknown")"
+  if [[ "$envelope_class" != "unknown" ]]; then
+    printf '%s\n' "$envelope_class"
+    return 0
+  fi
+
   [[ "$agent_rc" -ne 0 && -s "$file" ]] || { printf '%s\n' "unknown"; return 0; }
 
   local stripped line
@@ -196,15 +263,19 @@ classify_agent_iteration() {
   fi
 }
 
-# _handle_agent_rate_limit_in_phase <phase> <output_file>
+# _handle_agent_rate_limit_in_phase <phase> <output_file> [rate_limit_hit]
 #   Shared non-lens phase policy for failed agent invocations. Returns 0 only
-#   when <output_file> contains a known upstream rate-limit/quota/auth failure.
+#   when <output_file> contains or the caller supplies a known upstream
+#   rate-limit/quota/auth failure.
 _handle_agent_rate_limit_in_phase() {
-  local phase="${1:-agent-phase}" output_file="${2:-}"
+  local phase="${1:-agent-phase}" output_file="${2:-}" supplied_hit="${3:-}"
   local rl_hit rl_sig rl_snip stop_reason
 
-  [[ -n "$output_file" && -s "$output_file" ]] || return 1
-  rl_hit="$(detect_agent_rate_limit "$output_file" || true)"
+  rl_hit="$supplied_hit"
+  if [[ -z "$rl_hit" ]]; then
+    [[ -n "$output_file" && -s "$output_file" ]] || return 1
+    rl_hit="$(detect_agent_rate_limit "$output_file" || true)"
+  fi
   [[ -n "$rl_hit" ]] || return 1
 
   rl_sig="${rl_hit%%|*}"
@@ -231,6 +302,45 @@ _handle_agent_rate_limit_in_phase() {
 
 handle_agent_rate_limit_in_phase() {
   _handle_agent_rate_limit_in_phase "$@"
+}
+
+# handle_agent_failure_in_phase <phase> <output_file> <agent_rc> [envelope_file] [message_prefix]
+#   Applies shared non-lens failure policy. Returns:
+#     0 when the agent result is not classified as a failure
+#     1 for terminal/generic agent failures
+#     3 for phase rate-limit aborts
+handle_agent_failure_in_phase() {
+  local phase="${1:-agent-phase}" output_file="${2:-}" agent_rc="${3:-0}" envelope_file="${4:-}" message_prefix="${5:-agent phase}"
+  local failure_class rl_hit
+
+  failure_class="$(classify_agent_iteration "$output_file" "$agent_rc" "$envelope_file" 2>/dev/null || printf '%s' "unknown")"
+  case "$failure_class" in
+    auth-expired|model-unavailable|budget-exhausted|agent-refused|max-tokens-truncation|agent-error)
+      printf '%s\n' "$message_prefix: agent invocation failed: $failure_class" >&2
+      return 1
+      ;;
+    rate-limited)
+      rl_hit="$(detect_agent_rate_limit "$output_file" || true)"
+      if [[ -z "$rl_hit" ]]; then
+        rl_hit="structured-envelope|Claude JSON envelope reported rate limit"
+      fi
+      if _handle_agent_rate_limit_in_phase "$phase" "$output_file" "$rl_hit"; then
+        return 3
+      fi
+      printf '%s\n' "$message_prefix: agent invocation failed: $failure_class" >&2
+      return 1
+      ;;
+  esac
+
+  if (( agent_rc != 0 )); then
+    if _handle_agent_rate_limit_in_phase "$phase" "$output_file"; then
+      return 3
+    fi
+    printf '%s\n' "$message_prefix: agent invocation failed" >&2
+    return 1
+  fi
+
+  return 0
 }
 
 # parse_rate_limit_resume_epoch <output_file>

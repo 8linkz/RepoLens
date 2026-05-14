@@ -325,6 +325,55 @@ assert_eq "rate-limited meta creates abort sentinel" "present" "$sentinel_state"
 assert_eq "rate-limited meta records phase stop reason" "rate-limited-meta" "$(jq -r '.stopped_reason' "$SUMMARY_FILE")"
 
 echo ""
+echo "Test 3c: meta-orchestrator structured rc=0 rate-limit records abort state"
+RUN_ID="meta-structured-rate-limit"
+LOG_BASE="$TMPDIR/meta-structured-rate-limit-logs"
+SUMMARY_FILE="$LOG_BASE/summary.json"
+PROJECT_PATH="$TMPDIR/project"
+MODE="audit"
+AGENT="claude"
+AGENT_TIMEOUT_SECS=5
+AGENT_KILL_GRACE_SECS=1
+BASE_PROMPTS_DIR="$SCRIPT_DIR/prompts/_base"
+CURRENT_ROUND_TOTAL=2
+LOG_LINES=()
+RUN_AGENT_COUNT=0
+mkdir -p "$LOG_BASE/rounds/round-1" "$PROJECT_PATH"
+printf '{"stopped_reason":null,"lenses":[]}\n' > "$SUMMARY_FILE"
+printf '%s\n' '# Round Digest' 'No findings this round.' > "$LOG_BASE/rounds/round-1/digest.md"
+
+run_agent() {
+  RUN_AGENT_COUNT=$((RUN_AGENT_COUNT + 1))
+  local envelope_path="${6:-${REPOLENS_AGENT_ENVELOPE_FILE:-}}"
+  if [[ -n "$envelope_path" ]]; then
+    mkdir -p "$(dirname "$envelope_path")"
+    cat > "$envelope_path" <<'JSON'
+{"result":"LENS: injection\nHYPOTHESIS: This dispatch must not be promoted.\nDONE\n","is_error":true,"api_error_status":429,"error":{"type":"rate_limit_error","message":"rate limited"}}
+JSON
+  fi
+  printf '%s\n' 'LENS: injection' 'HYPOTHESIS: This dispatch must not be promoted.' 'DONE'
+  return 0
+}
+
+run_meta_orchestrator 1 2
+rc=$?
+assert_eq "structured rc=0 rate-limited meta-orchestrator returns distinct rc" "3" "$rc"
+assert_eq "structured rate-limited meta-orchestrator invokes agent once" "1" "$RUN_AGENT_COUNT"
+if [[ -f "$LOG_BASE/.rate-limit-abort" ]]; then
+  sentinel_state="present"
+else
+  sentinel_state="missing"
+fi
+assert_eq "structured rate-limited meta creates abort sentinel" "present" "$sentinel_state"
+assert_eq "structured rate-limited meta records phase stop reason" "rate-limited-meta" "$(jq -r '.stopped_reason' "$SUMMARY_FILE")"
+if [[ -f "$LOG_BASE/rounds/round-1/dispatch.md" ]]; then
+  dispatch_state="present"
+else
+  dispatch_state="missing"
+fi
+assert_eq "structured rate-limited meta does not promote dispatch" "missing" "$dispatch_state"
+
+echo ""
 echo "Test 4: run_rounds uses previous-round dispatch lens directives"
 RUN_ID="dispatch-run"
 LOG_BASE="$TMPDIR/dispatch-logs"

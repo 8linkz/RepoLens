@@ -404,12 +404,19 @@ run_meta_orchestrator() {
   printf '%s\n' "$prompt" > "$prompt_path" || return 1
 
   log_info "[round $round] Running meta-orchestrator for round $next_round"
-  run_agent "$AGENT" "$prompt" "$project_path" "${AGENT_TIMEOUT_SECS:-}" "${AGENT_KILL_GRACE_SECS:-30}" > "$output_path" 2>&1 || agent_rc=$?
-  if (( agent_rc != 0 )); then
-    if declare -F _handle_agent_rate_limit_in_phase >/dev/null 2>&1 \
-        && _handle_agent_rate_limit_in_phase "meta" "$output_path"; then
+  local envelope_path="$output_path.envelope.json"
+  run_agent "$AGENT" "$prompt" "$project_path" "${AGENT_TIMEOUT_SECS:-}" "${AGENT_KILL_GRACE_SECS:-30}" "$envelope_path" > "$output_path" 2>&1 || agent_rc=$?
+  if declare -F handle_agent_failure_in_phase >/dev/null 2>&1; then
+    local phase_rc
+    handle_agent_failure_in_phase "meta" "$output_path" "$agent_rc" "$envelope_path" "Meta-orchestrator" >/dev/null
+    phase_rc=$?
+    if (( phase_rc == 3 )); then
       return 3
+    elif (( phase_rc != 0 )); then
+      _rounds_meta_warn "Meta-orchestrator agent invocation failed"
+      return 1
     fi
+  elif (( agent_rc != 0 )); then
     _rounds_meta_warn "Meta-orchestrator exited with status $agent_rc"
     return "$agent_rc"
   fi
@@ -1295,7 +1302,7 @@ _rounds_agent_abort_reason() {
     local systemic_reason
     systemic_reason="$(head -n 1 "$LOG_BASE/.systemic-failure-abort" 2>/dev/null || true)"
     case "$systemic_reason" in
-      auth-expired|model-unavailable|budget-exhausted)
+      auth-expired|model-unavailable|budget-exhausted|agent-refused|max-tokens-truncation|agent-error)
         printf '%s\n' "$systemic_reason"
         ;;
       *)

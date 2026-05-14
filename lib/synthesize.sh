@@ -658,16 +658,20 @@ run_synthesizer() {
   }
 
   local transcript_path="$final_dir/synthesizer-output.txt"
+  local envelope_path="$transcript_path.envelope.json"
   local agent_rc=0
-  run_agent "$agent" "$prompt_text" "$project_path" > "$transcript_path" 2>&1 || agent_rc=$?
+  run_agent "$agent" "$prompt_text" "$project_path" "" "" "$envelope_path" > "$transcript_path" 2>&1 || agent_rc=$?
   agent_output="$(cat "$transcript_path" 2>/dev/null || true)"
-  if (( agent_rc != 0 )); then
-    if declare -F _handle_agent_rate_limit_in_phase >/dev/null 2>&1 \
-        && _handle_agent_rate_limit_in_phase "synthesizer" "$transcript_path"; then
+  if declare -F handle_agent_failure_in_phase >/dev/null 2>&1; then
+    local phase_rc
+    handle_agent_failure_in_phase "synthesizer" "$transcript_path" "$agent_rc" "$envelope_path" "run_synthesizer"
+    phase_rc=$?
+    if (( phase_rc != 0 )); then
       rm -f "$final_dir/manifest.json"
       rm -f "$final_dir/cross-link-actions.preserved.json"
-      return 3
+      return "$phase_rc"
     fi
+  elif (( agent_rc != 0 )); then
     echo "run_synthesizer: agent invocation failed" >&2
     return 1
   fi

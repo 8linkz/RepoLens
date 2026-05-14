@@ -176,13 +176,17 @@ run_triage() {
     }
   else
     local agent_rc=0
-    run_agent "$agent" "$prompt_text" "$project_path" "${AGENT_TIMEOUT_SECS:-}" "${AGENT_KILL_GRACE_SECS:-30}" > "$transcript_file" 2>&1 || agent_rc=$?
+    local envelope_file="$transcript_file.envelope.json"
+    run_agent "$agent" "$prompt_text" "$project_path" "${AGENT_TIMEOUT_SECS:-}" "${AGENT_KILL_GRACE_SECS:-30}" "$envelope_file" > "$transcript_file" 2>&1 || agent_rc=$?
     agent_output="$(cat "$transcript_file" 2>/dev/null || true)"
-    if (( agent_rc != 0 )); then
-      if declare -F _handle_agent_rate_limit_in_phase >/dev/null 2>&1 \
-          && _handle_agent_rate_limit_in_phase "triage" "$transcript_file"; then
-        return 3
+    if declare -F handle_agent_failure_in_phase >/dev/null 2>&1; then
+      local phase_rc
+      handle_agent_failure_in_phase "triage" "$transcript_file" "$agent_rc" "$envelope_file" "run_triage"
+      phase_rc=$?
+      if (( phase_rc != 0 )); then
+        return "$phase_rc"
       fi
+    elif (( agent_rc != 0 )); then
       echo "run_triage: agent invocation failed" >&2
       return 1
     fi

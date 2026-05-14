@@ -414,6 +414,68 @@ assert_contains "rate-limited verifier transcript preserves agent output" "HTTP 
 assert_file_exists "rate-limited verifier creates abort sentinel" "$LOG_BASE/.rate-limit-abort"
 assert_eq "rate-limited verifier records phase stop reason" "rate-limited-verifier" "$(jq -r '.stopped_reason' "$SUMMARY_FILE")"
 assert_file_missing "rate-limited verifier does not promote verification manifest" "$FINAL_DIR/verification.json"
+
+# Case 5c: a structured Claude rate-limit envelope with rc=0 must take the
+# phase abort path instead of promoting the valid-looking verification result.
+RUN_ID="test-run-214-verifier-structured-rate-limit"
+LOG_BASE="$TMPDIR/logs/$RUN_ID"
+ROUNDS_DIR="$LOG_BASE/rounds/round-1/lens-outputs"
+FINAL_DIR="$LOG_BASE/final"
+SUMMARY_FILE="$LOG_BASE/summary.json"
+mkdir -p "$ROUNDS_DIR" "$FINAL_DIR"
+cat > "$ROUNDS_DIR/structured-rate-limited-lens.md" <<'MD'
+---
+lens_id: structured-rate-limited-lens
+domain: code
+round: 1
+severity: high
+confidence: medium
+root_cause_category: missing-validation
+suspect_files:
+  - sample.go:1
+---
+## suspect_files
+- sample.go:1
+## hypothesis
+Verifier should run for this finding.
+## evidence
+- sample.go:1
+## next_steps_for_synthesizer
+Verify this.
+MD
+printf '{"stopped_reason":null,"lenses":[]}\n' > "$SUMMARY_FILE"
+export RUN_ID LOG_BASE SUMMARY_FILE
+run_agent() {
+  local envelope_path="${6:-${REPOLENS_AGENT_ENVELOPE_FILE:-}}"
+  if [[ -n "$envelope_path" ]]; then
+    mkdir -p "$(dirname "$envelope_path")"
+    cat > "$envelope_path" <<'JSON'
+{"result":"[{\"finding_id\":\"structured-rate-limit\",\"status\":\"VERIFIED\",\"notes\":\"must not promote\",\"lens_id\":\"structured-rate-limited-lens\",\"domain\":\"code\",\"round\":1,\"source_finding_path\":\"logs/test-run-214-verifier-structured-rate-limit/rounds/round-1/lens-outputs/structured-rate-limited-lens.md\"}]\nDONE\n","is_error":true,"api_error_status":429,"error":{"type":"rate_limit_error","message":"rate limited"}}
+JSON
+  fi
+  cat <<'JSON'
+[
+  {
+    "finding_id": "structured-rate-limit",
+    "status": "VERIFIED",
+    "notes": "must not promote",
+    "lens_id": "structured-rate-limited-lens",
+    "domain": "code",
+    "round": 1,
+    "source_finding_path": "logs/test-run-214-verifier-structured-rate-limit/rounds/round-1/lens-outputs/structured-rate-limited-lens.md"
+  }
+]
+DONE
+JSON
+  return 0
+}
+run_verifier "$RUN_ID" >"$TMPDIR/structured-rate-limit.out" 2>"$TMPDIR/structured-rate-limit.err"
+status=$?
+assert_eq "structured rc=0 rate-limited verifier returns distinct rc" "3" "$status"
+assert_file_exists "structured rate-limited verifier writes transcript" "$FINAL_DIR/verifier-output.txt"
+assert_file_exists "structured rate-limited verifier creates abort sentinel" "$LOG_BASE/.rate-limit-abort"
+assert_eq "structured rate-limited verifier records phase stop reason" "rate-limited-verifier" "$(jq -r '.stopped_reason' "$SUMMARY_FILE")"
+assert_file_missing "structured rate-limited verifier does not promote verification manifest" "$FINAL_DIR/verification.json"
 RUN_ID="test-run-168"
 LOG_BASE="$TMPDIR/logs/$RUN_ID"
 ROUNDS_DIR="$LOG_BASE/rounds/round-1/lens-outputs"
