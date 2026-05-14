@@ -30,6 +30,7 @@ FAIL=0
 TOTAL=0
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
+FIXTURE_DIR="$SCRIPT_DIR/tests/fixtures/agent-rate-limits"
 
 write_fixture() {
   local name="$1" body="$2"
@@ -93,6 +94,18 @@ assert_empty() {
   fi
 }
 
+expected_next_time_epoch() {
+  local zone="$1" time_expr="$2"
+  local expected now
+
+  expected="$(TZ="$zone" date -d "$time_expr" +%s)"
+  now="$(date +%s)"
+  if [[ "$expected" -le "$now" ]]; then
+    expected=$((expected + 86400))
+  fi
+  printf '%s\n' "$expected"
+}
+
 echo "=== parse_rate_limit_resume_epoch - absolute formats ==="
 
 f="$(write_fixture "incident-ordinal" "ERROR: You've hit your usage limit. Try again at Apr 16th, 2026 12:04 AM.")"
@@ -110,6 +123,34 @@ if [[ "$expected" -le "$now" ]]; then
   expected=$((expected + 86400))
 fi
 assert_epoch_eq "Time-only timestamp rolls forward to the next occurrence" "$f" "$expected"
+
+echo ""
+echo "=== parse_rate_limit_resume_epoch - resets formats ==="
+
+old_tz="${TZ:-}"
+export TZ=America/Los_Angeles
+
+expected="$(expected_next_time_epoch "Europe/Berlin" "11:30 PM")"
+assert_epoch_eq "Paren-wrapped IANA zone honored, not host-TZ-shadowed" "$FIXTURE_DIR/claude-user-tier-2026-05.txt" "$expected"
+
+expected="$(expected_next_time_epoch "UTC" "23:30")"
+assert_epoch_eq "Paren-wrapped UTC zone honored" "$FIXTURE_DIR/claude-user-tier-utc.txt" "$expected"
+
+f="$(write_fixture "claude-resets-ansi-spaced-ampm" $'\e[1;31mYou'\''ve hit your limit · resets 11:30 PM (Europe/Berlin)\e[0m')"
+expected="$(expected_next_time_epoch "Europe/Berlin" "11:30 PM")"
+assert_epoch_eq "ANSI-wrapped reset time with spaced AM/PM parses" "$f" "$expected"
+
+f="$(write_fixture "claude-resets-no-tz" "You've hit your limit · resets 11pm")"
+expected="$(expected_next_time_epoch "America/Los_Angeles" "11 PM")"
+assert_epoch_eq "Reset time without zone uses host timezone and rolls forward" "$f" "$expected"
+
+expected="$(expected_next_time_epoch "America/Los_Angeles" "12:04 AM")"
+assert_epoch_eq "Reset time with colon and spaced AM/PM uses host timezone" "$FIXTURE_DIR/claude-user-tier-am.txt" "$expected"
+
+f="$(write_fixture "claude-resets-vague" "You've hit your limit · resets soon")"
+assert_empty "Vague resets wording remains unparseable" "$f"
+
+export TZ="$old_tz"
 
 echo ""
 echo "=== parse_rate_limit_resume_epoch - relative formats ==="

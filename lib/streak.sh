@@ -167,7 +167,7 @@ parse_rate_limit_resume_epoch() {
   local file="$1"
   [[ -s "$file" ]] || { echo ""; return 0; }
 
-  local stripped now_epoch seconds line fragment lower candidate epoch
+  local stripped now_epoch seconds line fragment lower candidate epoch time_part zone resets_re
   stripped="$(strip_ansi < "$file" 2>/dev/null)"
   [[ -n "$stripped" ]] || { echo ""; return 0; }
 
@@ -222,6 +222,43 @@ parse_rate_limit_resume_epoch() {
       seconds=$((10#${BASH_REMATCH[1]}))
       printf '%s\n' $((now_epoch + seconds))
       return 0
+    fi
+  fi
+
+  line="$(printf '%s\n' "$stripped" | grep -iE -m1 'resets[[:space:]]+[0-9]' 2>/dev/null || true)"
+  if [[ -n "$line" ]]; then
+    fragment="$(printf '%s\n' "$line" | sed -E 's/.*[Rr][Ee][Ss][Ee][Tt][Ss][[:space:]]+//')"
+    fragment="${fragment#"${fragment%%[![:space:]]*}"}"
+    fragment="${fragment%"${fragment##*[![:space:]]}"}"
+
+    resets_re='^(([0-9]{1,2}:[0-9]{2})([[:space:]]*[AaPp][Mm])?|([0-9]{1,2})([[:space:]]*[AaPp][Mm]))[[:space:]]*(\(([^)]+)\))?'
+    if [[ "$fragment" =~ $resets_re ]]; then
+      time_part="${BASH_REMATCH[1]}"
+      zone="${BASH_REMATCH[7]:-}"
+      time_part="${time_part#"${time_part%%[![:space:]]*}"}"
+      time_part="${time_part%"${time_part##*[![:space:]]}"}"
+      zone="${zone#"${zone%%[![:space:]]*}"}"
+      zone="${zone%"${zone##*[![:space:]]}"}"
+
+      epoch=""
+      if [[ -n "$zone" ]]; then
+        if [[ "$zone" =~ ^[A-Za-z_]+(/[A-Za-z_+-]+)+$ || "$zone" =~ ^[A-Za-z]{2,5}$ ]]; then
+          epoch="$(TZ="$zone" date -d "$time_part" +%s 2>/dev/null || true)"
+        fi
+        if [[ ! "$epoch" =~ ^[0-9]+$ ]]; then
+          epoch="$(date -d "$time_part $zone" +%s 2>/dev/null || true)"
+        fi
+      else
+        epoch="$(date -d "$time_part" +%s 2>/dev/null || true)"
+      fi
+
+      if [[ "$epoch" =~ ^[0-9]+$ ]]; then
+        if [[ "$epoch" -le "$now_epoch" ]]; then
+          epoch=$((epoch + 86400))
+        fi
+        printf '%s\n' "$epoch"
+        return 0
+      fi
     fi
   fi
 
