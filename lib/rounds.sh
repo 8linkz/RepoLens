@@ -1029,6 +1029,101 @@ _round_digest_frontmatter_block() {
   ' "$file"
 }
 
+_round_digest_finding_segments() {
+  local file="$1"
+
+  awk '
+    BEGIN {
+      segment_sep = sprintf("%c", 30)
+      field_sep = sprintf("%c", 31)
+      state = "start"
+      frontmatter = ""
+      body = ""
+      emitted = 0
+    }
+    function emit_segment() {
+      if (frontmatter == "") {
+        return
+      }
+      printf "%s%s%s%s", frontmatter, field_sep, body, segment_sep
+      frontmatter = ""
+      body = ""
+      emitted = 1
+    }
+    function valid_finding_frontmatter(candidate,    lines, count, i) {
+      has_severity = 0
+      has_domain = 0
+      has_lens = 0
+      count = split(candidate, lines, "\n")
+      for (i = 1; i <= count; i++) {
+        if (lines[i] ~ /^[[:space:]]*severity[[:space:]]*:/) {
+          has_severity = 1
+        } else if (lines[i] ~ /^[[:space:]]*domain[[:space:]]*:/) {
+          has_domain = 1
+        } else if (lines[i] ~ /^[[:space:]]*(lens_id|lens)[[:space:]]*:/) {
+          has_lens = 1
+        }
+      }
+      return has_severity && has_domain && has_lens
+    }
+    NR == 1 && $0 != "---" {
+      exit 1
+    }
+    state == "start" {
+      if ($0 == "---") {
+        state = "frontmatter"
+        next
+      }
+    }
+    state == "frontmatter" && $0 == "---" {
+      state = "body"
+      next
+    }
+    state == "frontmatter" {
+      frontmatter = frontmatter $0 "\n"
+      next
+    }
+    state == "body" && pending_frontmatter {
+      if ($0 == "---") {
+        if (valid_finding_frontmatter(candidate_frontmatter)) {
+          emit_segment()
+          frontmatter = candidate_frontmatter
+          body = ""
+          pending_frontmatter = 0
+        } else {
+          body = body "---\n" candidate_frontmatter
+          pending_frontmatter = 1
+        }
+        candidate_frontmatter = ""
+        next
+      }
+      candidate_frontmatter = candidate_frontmatter $0 "\n"
+      next
+    }
+    state == "body" && $0 == "---" {
+      pending_frontmatter = 1
+      candidate_frontmatter = ""
+      next
+    }
+    state == "body" {
+      body = body $0 "\n"
+      next
+    }
+    END {
+      if (state == "frontmatter") {
+        exit 1
+      }
+      if (pending_frontmatter) {
+        body = body "---\n" candidate_frontmatter
+      }
+      emit_segment()
+      if (!emitted) {
+        exit 1
+      }
+    }
+  ' "$file"
+}
+
 _round_digest_trim_yaml_value() {
   local value="$*"
 
@@ -1133,12 +1228,102 @@ _round_digest_join_lines() {
   printf '%s\n' "${result:-none}"
 }
 
+_round_digest_section_text_from_stream() {
+  local heading="$1"
+
+  awk -v heading="$heading" '
+    BEGIN { target = "## " heading }
+    tolower($0) == target { collecting = 1; next }
+    collecting && /^##[[:space:]]+/ { exit 0 }
+    collecting { print }
+  '
+}
+
+_round_digest_inline_text() {
+  local limit="${1:-200}" text
+
+  text="$(tr '\r\n\t' '   ' \
+    | sed -E \
+        -e 's/<\/?spec>//g' \
+        -e 's/```+/`/g' \
+        -e 's/[[:space:]]+/ /g' \
+        -e 's/^[[:space:]]+//' \
+        -e 's/[[:space:]]+$//')"
+  text="${text:0:$limit}"
+  printf '%s\n' "$text"
+}
+
+_round_digest_display_path() {
+  local value="$*"
+
+  value="$(_round_digest_trim_yaml_value "$value")"
+  printf '%s\n' "$value" \
+    | sed -E \
+        -e 's/<\/?spec>//g' \
+        -e 's/`//g' \
+        -e 's/[[:space:]]+/ /g' \
+        -e 's/^[[:space:]]+//' \
+        -e 's/[[:space:]]+$//'
+}
+
+_round_digest_confidence_rank() {
+  local confidence
+
+  confidence="$(_round_digest_sanitize_identifier "$1")"
+  case "$confidence" in
+    high) printf '3\n' ;;
+    medium) printf '2\n' ;;
+    low) printf '1\n' ;;
+    *) printf '0\n' ;;
+  esac
+}
+
+_round_digest_finding_id() {
+  local lens="$1" domain="$2" round_number="$3" file="$4" finding_identity="$5"
+  local suspect_count line
+  local -a sorted_suspects=() input_suspects=()
+
+  mapfile -t input_suspects
+  for line in "${input_suspects[@]}"; do
+    [[ -n "$line" ]] || continue
+    sorted_suspects+=("$line")
+  done
+  suspect_count="${#sorted_suspects[@]}"
+  if (( suspect_count == 0 )); then
+    sorted_suspects=("$file")
+  else
+    mapfile -t sorted_suspects < <(printf '%s\n' "${sorted_suspects[@]}" | LC_ALL=C sort)
+  fi
+
+  if command -v sha1sum >/dev/null 2>&1; then
+    { printf '%s\0%s\0%s\0%s\0' "$lens" "$domain" "$round_number" "$finding_identity"; printf '%s\n' "${sorted_suspects[@]}"; } \
+      | sha1sum | awk '{print substr($1, 1, 16)}'
+  elif command -v shasum >/dev/null 2>&1; then
+    { printf '%s\0%s\0%s\0%s\0' "$lens" "$domain" "$round_number" "$finding_identity"; printf '%s\n' "${sorted_suspects[@]}"; } \
+      | shasum -a 1 | awk '{print substr($1, 1, 16)}'
+  else
+    { printf '%s|%s|%s|%s|' "$lens" "$domain" "$round_number" "$finding_identity"; printf '%s\n' "${sorted_suspects[@]}"; } \
+      | cksum | awk '{printf "%016x\n", $1}'
+  fi
+}
+
+_round_digest_rank_suspect_files() {
+  local limit="$1" suspect_file count
+
+  for suspect_file in "${!_round_digest_suspect_file_counts[@]}"; do
+    count="${_round_digest_suspect_file_counts[$suspect_file]}"
+    printf '%s\t%s\n' "$count" "$suspect_file"
+  done | LC_ALL=C sort -t "$(printf '\t')" -k1,1nr -k2,2 | head -n "$limit"
+}
+
 build_round_digest() {
   local round_dir="${1:-}" lens_outputs_dir digest_path repo_root domains_file
-  local file frontmatter severity domain lens category normalized category_seen
+  local file segment segment_sep field_sep segments_output frontmatter body severity domain lens category normalized category_seen primary_category
   local suspect_file audit_domain audit_total coverage_count coverage_domains registered_lens display_lens
+  local round_number confidence confidence_rank severity_rank_value score finding_id hypothesis files_display title_text finding_identity
+  local omitted_total
   local tmp_digest digest_lines
-  local -a md_files=() sorted_lenses=() touched_domains=()
+  local -a md_files=() sorted_lenses=() touched_domains=() finding_records=() finding_segments=() suspect_files=() display_files=()
   local -A _round_digest_lens_counts=()
   local -A _round_digest_lens_category_counts=()
   local -A _round_digest_category_counts=()
@@ -1146,6 +1331,7 @@ build_round_digest() {
   local -A _round_digest_audit_domain_set=()
   local -A _round_digest_registered_lens_set=()
   local -A _round_digest_suspect_file_counts=()
+  local -A _round_digest_omitted_lens_counts=()
 
   if [[ -z "$round_dir" ]]; then
     _round_digest_warn "build_round_digest requires a round directory"
@@ -1180,51 +1366,101 @@ build_round_digest() {
   fi
 
   for file in "${md_files[@]}"; do
-    if ! frontmatter="$(_round_digest_frontmatter_block "$file")"; then
+    segment_sep=$'\036'
+    field_sep=$'\037'
+    finding_segments=()
+    if ! segments_output="$(_round_digest_finding_segments "$file")"; then
       _round_digest_warn "Skipping malformed lens output $(basename "$file"): missing or unterminated YAML frontmatter"
       continue
     fi
 
-    severity="$(severity_normalize "$(printf '%s\n' "$frontmatter" | _round_digest_frontmatter_scalar "severity")")"
-    domain="$(printf '%s\n' "$frontmatter" | _round_digest_frontmatter_scalar "domain")"
-    lens="$(printf '%s\n' "$frontmatter" | _round_digest_frontmatter_scalar "lens")"
+    while [[ "$segments_output" == *"$segment_sep"* ]]; do
+      finding_segments+=("${segments_output%%"$segment_sep"*}")
+      segments_output="${segments_output#*"$segment_sep"}"
+    done
 
-    if [[ -z "$severity" || -z "$domain" || -z "$lens" ]]; then
-      _round_digest_warn "Skipping malformed lens output $(basename "$file"): required frontmatter keys severity, domain, and lens are required"
-      continue
-    fi
-    if [[ -z "${_round_digest_registered_lens_set[$lens]:-}" ]]; then
-      _round_digest_warn "Skipping untrusted lens output $(basename "$file"): lens id is not registered"
-      continue
-    fi
-    if [[ -n "${REPOLENS_MIN_SEVERITY:-}" ]] && ! severity_meets_min "$severity" "$REPOLENS_MIN_SEVERITY"; then
-      continue
-    fi
+    for segment in "${finding_segments[@]}"; do
+      [[ "$segment" == *"$field_sep"* ]] || continue
+      frontmatter="${segment%%"$field_sep"*}"
+      body="${segment#*"$field_sep"}"
 
-    _round_digest_lens_counts["$lens"]=$(( ${_round_digest_lens_counts["$lens"]:-0} + 1 ))
-    if [[ -n "${_round_digest_audit_domain_set[$domain]:-}" ]]; then
-      _round_digest_touched_domains["$domain"]=1
-    fi
+      severity="$(severity_normalize "$(printf '%s\n' "$frontmatter" | _round_digest_frontmatter_scalar "severity")")"
+      domain="$(printf '%s\n' "$frontmatter" | _round_digest_frontmatter_scalar "domain")"
+      lens="$(printf '%s\n' "$frontmatter" | _round_digest_frontmatter_scalar "lens_id")"
+      if [[ -z "$lens" ]]; then
+        lens="$(printf '%s\n' "$frontmatter" | _round_digest_frontmatter_scalar "lens")"
+      fi
 
-    category_seen=0
-    while IFS= read -r category; do
-      normalized="$(_round_digest_normalize_label "$category")"
-      [[ -n "$normalized" ]] || continue
-      category_seen=1
-      _round_digest_lens_category_counts["$lens|$normalized"]=$(( ${_round_digest_lens_category_counts["$lens|$normalized"]:-0} + 1 ))
-      _round_digest_category_counts["$normalized"]=$(( ${_round_digest_category_counts["$normalized"]:-0} + 1 ))
-    done < <(printf '%s\n' "$frontmatter" | _round_digest_frontmatter_values "root_cause_category")
+      if [[ -z "$severity" || -z "$domain" || -z "$lens" ]]; then
+        _round_digest_warn "Skipping malformed lens output $(basename "$file"): required frontmatter keys severity, domain, and lens_id or lens are required"
+        continue
+      fi
+      if [[ -z "${_round_digest_registered_lens_set[$lens]:-}" ]]; then
+        _round_digest_warn "Skipping untrusted lens output $(basename "$file"): lens id is not registered"
+        continue
+      fi
+      if [[ -n "${REPOLENS_MIN_SEVERITY:-}" ]] && ! severity_meets_min "$severity" "$REPOLENS_MIN_SEVERITY"; then
+        continue
+      fi
 
-    if (( category_seen == 0 )); then
-      _round_digest_lens_category_counts["$lens|uncategorized"]=$(( ${_round_digest_lens_category_counts["$lens|uncategorized"]:-0} + 1 ))
-      _round_digest_category_counts["uncategorized"]=$(( ${_round_digest_category_counts["uncategorized"]:-0} + 1 ))
-    fi
+      _round_digest_lens_counts["$lens"]=$(( ${_round_digest_lens_counts["$lens"]:-0} + 1 ))
+      if [[ -n "${_round_digest_audit_domain_set[$domain]:-}" ]]; then
+        _round_digest_touched_domains["$domain"]=1
+      fi
 
-    while IFS= read -r suspect_file; do
-      suspect_file="$(_round_digest_trim_yaml_value "$suspect_file")"
-      [[ -n "$suspect_file" ]] || continue
-      _round_digest_suspect_file_counts["$suspect_file"]=$(( ${_round_digest_suspect_file_counts["$suspect_file"]:-0} + 1 ))
-    done < <(printf '%s\n' "$frontmatter" | _round_digest_frontmatter_values "suspect_files")
+      category_seen=0
+      primary_category=""
+      while IFS= read -r category; do
+        normalized="$(_round_digest_normalize_label "$category")"
+        [[ -n "$normalized" ]] || continue
+        category_seen=1
+        if [[ -z "$primary_category" ]]; then
+          primary_category="$normalized"
+        fi
+        _round_digest_lens_category_counts["$lens|$normalized"]=$(( ${_round_digest_lens_category_counts["$lens|$normalized"]:-0} + 1 ))
+        _round_digest_category_counts["$normalized"]=$(( ${_round_digest_category_counts["$normalized"]:-0} + 1 ))
+      done < <(printf '%s\n' "$frontmatter" | _round_digest_frontmatter_values "root_cause_category")
+
+      if (( category_seen == 0 )); then
+        primary_category="uncategorized"
+        _round_digest_lens_category_counts["$lens|uncategorized"]=$(( ${_round_digest_lens_category_counts["$lens|uncategorized"]:-0} + 1 ))
+        _round_digest_category_counts["uncategorized"]=$(( ${_round_digest_category_counts["uncategorized"]:-0} + 1 ))
+      fi
+
+      suspect_files=()
+      display_files=()
+      while IFS= read -r suspect_file; do
+        suspect_file="$(_round_digest_display_path "$suspect_file")"
+        [[ -n "$suspect_file" ]] || continue
+        _round_digest_suspect_file_counts["$suspect_file"]=$(( ${_round_digest_suspect_file_counts["$suspect_file"]:-0} + 1 ))
+        suspect_files+=("$suspect_file")
+        if (( ${#display_files[@]} < 3 )); then
+          display_files+=("$suspect_file")
+        fi
+      done < <(printf '%s\n' "$frontmatter" | _round_digest_frontmatter_values "suspect_files")
+
+      confidence="$(_round_digest_sanitize_identifier "$(printf '%s\n' "$frontmatter" | _round_digest_frontmatter_scalar "confidence")")"
+      [[ -n "$confidence" ]] || confidence="unknown"
+      confidence_rank="$(_round_digest_confidence_rank "$confidence")"
+      severity_rank_value="$(severity_rank "$severity" 2>/dev/null || printf '0')"
+      score=$(( severity_rank_value * 100 + confidence_rank * 10 ))
+      round_number="$(printf '%s\n' "$frontmatter" | _round_digest_frontmatter_scalar "round")"
+      if [[ ! "$round_number" =~ ^[0-9]+$ ]]; then
+        round_number="$(basename "$round_dir" | sed -nE 's/^round-([0-9]+)$/\1/p')"
+      fi
+      [[ -n "$round_number" ]] || round_number="0"
+      hypothesis="$(printf '%s\n' "$body" | _round_digest_section_text_from_stream "hypothesis" | _round_digest_inline_text 200)"
+      [[ -n "$hypothesis" ]] || hypothesis="(missing)"
+      title_text="$(printf '%s\n' "$frontmatter" | _round_digest_frontmatter_scalar "title" | _round_digest_inline_text 160)"
+      finding_identity="$title_text"$'\n'"$hypothesis"
+      finding_id="$(_round_digest_finding_id "$lens" "$domain" "$round_number" "$file" "$finding_identity" < <(printf '%s\n' "${suspect_files[@]}"))"
+      if (( ${#display_files[@]} > 0 )); then
+        files_display="$(printf '%s\n' "${display_files[@]}" | paste -sd ',' - | sed 's/,/, /g')"
+      else
+        files_display="none"
+      fi
+      finding_records+=("$score"$'\t'"$lens"$'\t'"$finding_id"$'\t'"$severity"$'\t'"$confidence"$'\t'"$domain"$'\t'"$primary_category"$'\t'"$files_display"$'\t'"$hypothesis")
+    done
   done
 
   tmp_digest="${digest_path}.tmp.$$"
@@ -1236,7 +1472,11 @@ build_round_digest() {
     else
       mapfile -t sorted_lenses < <(printf '%s\n' "${!_round_digest_lens_counts[@]}" | LC_ALL=C sort)
       printf '## Lens Findings\n'
+      local lens_summary_count=0 max_lens_summaries=100
       for lens in "${sorted_lenses[@]}"; do
+        if (( lens_summary_count >= max_lens_summaries )); then
+          continue
+        fi
         display_lens="$(_round_digest_sanitize_identifier "$lens")"
         [[ -n "$display_lens" ]] || continue
         printf -- '- %s: %s finding' "$display_lens" "${_round_digest_lens_counts[$lens]}"
@@ -1244,7 +1484,11 @@ build_round_digest() {
           printf 's'
         fi
         printf '; top categories: %s\n' "$(_round_digest_join_lines < <(_round_digest_rank_lens_categories "$lens" 3))"
+        lens_summary_count=$((lens_summary_count + 1))
       done
+      if (( ${#sorted_lenses[@]} > max_lens_summaries )); then
+        printf -- '- + %s more lenses omitted from digest summary\n' "$(( ${#sorted_lenses[@]} - max_lens_summaries ))"
+      fi
       printf '\n'
 
       printf '## Top Themes\n'
@@ -1258,6 +1502,86 @@ build_round_digest() {
           printf '%s. %s (%s)\n' "$rank" "$theme" "$count"
           rank=$((rank + 1))
         done < <(_round_digest_rank_themes 3)
+      fi
+      printf '\n'
+
+      printf '## Hot Suspect Files\n'
+      if (( ${#_round_digest_suspect_file_counts[@]} == 0 )); then
+        printf 'none\n'
+      else
+        local suspect_rank=1 ranked_count ranked_file display_file
+        while IFS=$'\t' read -r ranked_count ranked_file; do
+          display_file="$(_round_digest_display_path "$ranked_file")"
+          [[ -n "$display_file" ]] || continue
+          printf '%s. `%s` (%s mention' "$suspect_rank" "$display_file" "$ranked_count"
+          if (( ranked_count != 1 )); then
+            printf 's'
+          fi
+          printf ')\n'
+          suspect_rank=$((suspect_rank + 1))
+        done < <(_round_digest_rank_suspect_files 10)
+      fi
+      printf '\n'
+
+      printf '## Findings\n'
+      local emitted=0 max_findings=30 record record_score record_lens record_id record_severity record_confidence
+      local record_domain record_category record_files record_hypothesis
+      if (( ${#finding_records[@]} == 0 )); then
+        printf 'none\n'
+      else
+        while IFS=$'\t' read -r record_score record_lens record_id record_severity record_confidence record_domain record_category record_files record_hypothesis; do
+          if (( emitted >= max_findings )); then
+            _round_digest_omitted_lens_counts["$record_lens"]=$(( ${_round_digest_omitted_lens_counts["$record_lens"]:-0} + 1 ))
+            continue
+          fi
+          printf -- '- `f:%s` %s/%s `%s/%s` category=%s files=' \
+            "$record_id" "$record_severity" "$record_confidence" \
+            "$(_round_digest_sanitize_identifier "$record_domain")" \
+            "$(_round_digest_sanitize_identifier "$record_lens")" \
+            "$(_round_digest_sanitize_identifier "$record_category")"
+          if [[ "$record_files" == "none" ]]; then
+            printf 'none'
+          else
+            local quoted_files=""
+            while IFS= read -r display_file; do
+              display_file="$(_round_digest_display_path "$display_file")"
+              [[ -n "$display_file" ]] || continue
+              if [[ -n "$quoted_files" ]]; then
+                quoted_files+=", "
+              fi
+              quoted_files+="\`$display_file\`"
+            done < <(printf '%s\n' "$record_files" | tr ',' '\n')
+            printf '%s' "${quoted_files:-none}"
+          fi
+          printf ' hypothesis="%s"\n' "$record_hypothesis"
+          emitted=$((emitted + 1))
+        done < <(printf '%s\n' "${finding_records[@]}" | LC_ALL=C sort -t "$(printf '\t')" -k1,1nr -k2,2 -k3,3)
+
+        omitted_total=0
+        for lens in "${!_round_digest_omitted_lens_counts[@]}"; do
+          omitted_total=$(( omitted_total + _round_digest_omitted_lens_counts["$lens"] ))
+        done
+        if (( omitted_total > 0 )); then
+          local omitted_tail_count=0 max_omitted_lens_tails=20 omitted_rendered=0
+          mapfile -t sorted_lenses < <(printf '%s\n' "${!_round_digest_omitted_lens_counts[@]}" | LC_ALL=C sort)
+          for lens in "${sorted_lenses[@]}"; do
+            if (( omitted_tail_count >= max_omitted_lens_tails )); then
+              continue
+            fi
+            printf -- '- + %s more finding' "${_round_digest_omitted_lens_counts[$lens]}"
+            if (( ${_round_digest_omitted_lens_counts[$lens]} != 1 )); then
+              printf 's'
+            fi
+            printf ' in %s\n' "$(_round_digest_sanitize_identifier "$lens")"
+            omitted_rendered=$(( omitted_rendered + _round_digest_omitted_lens_counts["$lens"] ))
+            omitted_tail_count=$((omitted_tail_count + 1))
+          done
+          if (( omitted_rendered < omitted_total )); then
+            printf -- '- + %s more findings across %s additional lenses\n' \
+              "$(( omitted_total - omitted_rendered ))" \
+              "$(( ${#sorted_lenses[@]} - omitted_tail_count ))"
+          fi
+        fi
       fi
       printf '\n'
     fi
