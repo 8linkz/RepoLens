@@ -518,7 +518,7 @@ fi
 echo ""
 echo "Test 14: repolens.sh uses forge_issue_list_count at the issue-count call sites"
 legacy_refs="$(grep -nF 'count_repo_issues' "$SCRIPT_DIR/repolens.sh" 2>/dev/null || true)"
-forge_call_count="$(grep -cF 'forge_issue_list_count "$REPO_OWNER/$REPO_NAME" "$lens_label"' "$SCRIPT_DIR/repolens.sh" 2>/dev/null || true)"
+forge_call_count="$(grep -cF 'forge_issue_list_count "$FORGE_REPO_SLUG" "$lens_label"' "$SCRIPT_DIR/repolens.sh" 2>/dev/null || true)"
 forge_context_count="$(grep -cF 'FORGE_PROJECT_PATH="$PROJECT_PATH"' "$SCRIPT_DIR/repolens.sh" 2>/dev/null || true)"
 TOTAL=$((TOTAL + 1))
 if [[ -z "$legacy_refs" && "$forge_call_count" -eq 2 && "$forge_context_count" -ge 1 ]]; then
@@ -531,6 +531,50 @@ else
   echo "    forge_issue_list_count call count: $forge_call_count"
   echo "    FORGE_PROJECT_PATH assignment count: $forge_context_count"
 fi
+
+echo ""
+echo "Test 15: repolens.sh label bootstrap uses the canonical forge repo slug"
+label_bootstrap_count="$(grep -cF 'forge_label_bootstrap "$FORGE_REPO_SLUG" "$label_set_file"' "$SCRIPT_DIR/repolens.sh" 2>/dev/null || true)"
+legacy_label_bootstrap_count="$(grep -cF 'forge_label_bootstrap "$REPO_OWNER/$REPO_NAME" "$label_set_file"' "$SCRIPT_DIR/repolens.sh" 2>/dev/null || true)"
+TOTAL=$((TOTAL + 1))
+if [[ "$label_bootstrap_count" -eq 1 && "$legacy_label_bootstrap_count" -eq 0 ]]; then
+  PASS=$((PASS + 1))
+  echo "  PASS: label bootstrap uses FORGE_REPO_SLUG"
+else
+  FAIL=$((FAIL + 1))
+  echo "  FAIL: expected label bootstrap to use FORGE_REPO_SLUG exactly once and never REPO_OWNER/REPO_NAME"
+  echo "    FORGE_REPO_SLUG bootstrap count: $label_bootstrap_count"
+  echo "    legacy bootstrap count: $legacy_label_bootstrap_count"
+fi
+
+echo ""
+echo "Test 16: repolens.sh derives metadata from origin slug for renamed checkouts"
+metadata_project="$TMPDIR/local-dir-metadata"
+mkdir -p "$metadata_project"
+git -C "$metadata_project" init -q
+git -C "$metadata_project" remote add origin "https://github.com/acme/origin-repo.git"
+metadata_block="$(
+  awk '
+    /^# --- Derive repo metadata ---$/ { in_repo_block = 1 }
+    /^# --- Validate agent and dependencies ---$/ { in_repo_block = 0 }
+    in_repo_block { print }
+  ' "$SCRIPT_DIR/repolens.sh"
+)"
+metadata_result="$(
+  bash -c '
+    set -uo pipefail
+    source "$1"
+    PROJECT_PATH="$2"
+    eval "$3"
+    printf "REPO_OWNER=%s\nREPO_NAME=%s\nREPO_OWNER_NAME=%s/%s\nFORGE_REPO_SLUG=%s\n" \
+      "$REPO_OWNER" "$REPO_NAME" "$REPO_OWNER" "$REPO_NAME" "$FORGE_REPO_SLUG"
+  ' bash "$SCRIPT_DIR/lib/forge.sh" "$metadata_project" "$metadata_block" 2>"$TMPDIR/t16.err"
+)"
+metadata_rc=$?
+assert_rc_zero "metadata block completes for renamed checkout" "$metadata_rc"
+assert_contains "metadata derives REPO_OWNER from origin slug" "REPO_OWNER=acme" "$metadata_result"
+assert_contains "metadata derives REPO_NAME from origin slug" "REPO_NAME=origin-repo" "$metadata_result"
+assert_contains "metadata composed owner/name equals FORGE_REPO_SLUG" $'REPO_OWNER_NAME=acme/origin-repo\nFORGE_REPO_SLUG=acme/origin-repo' "$metadata_result"
 
 echo ""
 echo "================================"

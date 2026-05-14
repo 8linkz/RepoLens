@@ -573,8 +573,15 @@ _rounds_meta_prompt_vars() {
   esac
 
   printf 'PROJECT_PATH=%s' "$(_rounds_meta_prompt_escape_value "$project_path")"
-  printf '|REPO_OWNER=%s' "$(_rounds_meta_prompt_escape_value "${REPO_OWNER:-local}")"
-  printf '|REPO_NAME=%s' "$(_rounds_meta_prompt_escape_value "${REPO_NAME:-$(basename "$project_path")}")"
+  local repo_owner="${REPO_OWNER:-local}"
+  local repo_name="${REPO_NAME:-}"
+  if [[ -z "$repo_name" && -n "${FORGE_REPO_SLUG:-}" ]]; then
+    repo_owner="${FORGE_REPO_SLUG%%/*}"
+    repo_name="${FORGE_REPO_SLUG#*/}"
+  fi
+
+  printf '|REPO_OWNER=%s' "$(_rounds_meta_prompt_escape_value "$repo_owner")"
+  printf '|REPO_NAME=%s' "$(_rounds_meta_prompt_escape_value "$repo_name")"
   printf '|MODE=%s' "$(_rounds_meta_prompt_escape_value "${MODE:-audit}")"
   printf '|RUN_ID=%s' "$(_rounds_meta_prompt_escape_value "${RUN_ID:-}")"
   printf '|ROUND_INDEX=%s' "$(_rounds_meta_prompt_escape_value "$round")"

@@ -1249,11 +1249,21 @@ elif [[ -n "$DONE_STREAK_REQUIRED_ENV" ]]; then
 fi
 
 # --- Derive repo metadata ---
-REPO_NAME="$(basename "$PROJECT_PATH")"
-REPO_OWNER="$(git -C "$PROJECT_PATH" remote get-url origin 2>/dev/null | sed -E 's#.*/([^/]+)/[^/]+(.git)?$#\1#' || echo "local")"
-if [[ -z "$REPO_OWNER" || "$REPO_OWNER" == "$REPO_NAME" ]]; then
+_origin_url="$(git -C "$PROJECT_PATH" remote get-url origin 2>/dev/null || true)"
+FORGE_HOST="$(detect_forge_host "$_origin_url")"
+FORGE_REPO_SLUG="$(forge_remote_repo_slug "$_origin_url")"
+if [[ -n "$FORGE_REPO_SLUG" ]]; then
+  REPO_OWNER="${FORGE_REPO_SLUG%%/*}"
+  REPO_NAME="${FORGE_REPO_SLUG#*/}"
+else
   REPO_OWNER="local"
+  REPO_NAME="$(basename "$PROJECT_PATH")"
+  FORGE_REPO_SLUG="$REPO_OWNER/$REPO_NAME"
 fi
+# Filing and synthesize callbacks read FORGE_REPO directly; keep it on
+# the origin-derived slug so renamed checkouts do not file against basename.
+FORGE_REPO="$FORGE_REPO_SLUG"
+export FORGE_REPO
 
 # --- Validate agent and dependencies ---
 validate_agent "$AGENT"
@@ -1266,17 +1276,6 @@ case "$AGENT" in
   codex|spark|sparc) require_cmd codex ;;
   opencode|opencode/*) require_cmd opencode ;;
 esac
-
-_origin_url="$(git -C "$PROJECT_PATH" remote get-url origin 2>/dev/null || true)"
-FORGE_HOST="$(detect_forge_host "$_origin_url")"
-FORGE_REPO_SLUG="$(forge_remote_repo_slug "$_origin_url")"
-if [[ -z "$FORGE_REPO_SLUG" ]]; then
-  FORGE_REPO_SLUG="$REPO_OWNER/$REPO_NAME"
-fi
-# Filing and synthesize callbacks read FORGE_REPO directly; keep it on
-# the origin-derived slug so renamed checkouts do not file against basename.
-FORGE_REPO="$FORGE_REPO_SLUG"
-export FORGE_REPO
 
 # --- Resolve and validate forge provider ---
 if [[ -n "$FORGE_PROVIDER" ]]; then
@@ -1411,7 +1410,7 @@ if $BASE_WRAPPER_FALLBACK; then
 fi
 
 log_info "RepoLens run $RUN_ID starting"
-log_info "Project: $PROJECT_PATH ($REPO_OWNER/$REPO_NAME)"
+log_info "Project: $PROJECT_PATH ($FORGE_REPO_SLUG)"
 log_info "Agent: $AGENT | Mode: $MODE | Parallel: $PARALLEL"
 log_info "Agent timeout: ${AGENT_TIMEOUT_SECS}s"
 log_info "Agent timeout kill grace: ${AGENT_KILL_GRACE_SECS}s"
@@ -1950,7 +1949,7 @@ confirm_run() {
 
   echo ""
   echo "=== RepoLens Confirmation ==="
-  echo "Target repo:  $REPO_OWNER/$REPO_NAME"
+  echo "Target repo:  $FORGE_REPO_SLUG"
   print_remote_confirmation_context
   echo "Mode:         $MODE"
   echo "Agent:        $AGENT"
@@ -2165,7 +2164,7 @@ ensure_labels() {
     printf '%s=%s\n' "$spec_label" "c9b1ff" >> "$label_set_file"
   fi
 
-  forge_label_bootstrap "$REPO_OWNER/$REPO_NAME" "$label_set_file"
+  forge_label_bootstrap "$FORGE_REPO_SLUG" "$label_set_file"
   rm -f "$label_set_file"
 
   log_info "Labels ready."
@@ -2350,7 +2349,7 @@ run_lens() {
     issues_baseline="$(count_dry_run_issues "$lens_local_dir")"
   else
     local _baseline_out=""
-    if _baseline_out="$(forge_issue_list_count "$REPO_OWNER/$REPO_NAME" "$lens_label")"; then
+    if _baseline_out="$(forge_issue_list_count "$FORGE_REPO_SLUG" "$lens_label")"; then
       issues_baseline="$_baseline_out"
     else
       issues_baseline=0
@@ -2476,7 +2475,7 @@ run_lens() {
     if $LOCAL_MODE; then
       current_issue_count="$(count_dry_run_issues "$lens_local_dir")"
     else
-      if ! current_issue_count="$(forge_issue_list_count "$REPO_OWNER/$REPO_NAME" "$lens_label")"; then
+      if ! current_issue_count="$(forge_issue_list_count "$FORGE_REPO_SLUG" "$lens_label")"; then
         local fallback_issue_count
         fallback_issue_count="$(count_issues_in_output "$output_file")"
         log_warn "[$domain/$lens_id] Iteration $iteration: forge issue count failed; falling back to GitHub issue URLs in agent output ($fallback_issue_count issue(s) found)."
