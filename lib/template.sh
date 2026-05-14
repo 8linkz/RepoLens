@@ -230,6 +230,19 @@ compose_prompt() {
     value="${pair#*=}"
     value="$(_template_resolve_file_backed_value "$key" "$value")"
     prompt_vars["$key"]="$value"
+  done
+
+  # Treat FORGE_REPO_SLUG as the canonical repository identity for prompt
+  # prose. Some callers still pass REPO_NAME from the checkout basename; if the
+  # origin-derived slug is available, keep owner/name placeholders consistent
+  # with the forge target that agents will actually file against.
+  if [[ "${prompt_vars[FORGE_REPO_SLUG]:-}" == */* ]]; then
+    prompt_vars["REPO_OWNER"]="${prompt_vars[FORGE_REPO_SLUG]%%/*}"
+    prompt_vars["REPO_NAME"]="${prompt_vars[FORGE_REPO_SLUG]#*/}"
+  fi
+
+  for key in "${!prompt_vars[@]}"; do
+    value="${prompt_vars[$key]}"
     case "$key" in
       PRIOR_ROUND_DIGEST)
         prompt="${prompt//\{\{$key\}\}/$prior_round_digest_sentinel}"
