@@ -2540,7 +2540,7 @@ run_lens() {
     prev_lens_issues="$lens_issues"
 
     local done_detected=false
-    if check_done "$output_file"; then
+    if [[ "$agent_rc" -eq 0 ]] && check_done "$output_file"; then
       done_detected=true
     fi
 

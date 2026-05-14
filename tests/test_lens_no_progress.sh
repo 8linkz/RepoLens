@@ -148,6 +148,10 @@ case "${FAKE_AGENT_MODE:?}" in
     printf 'upstream error\n'
     exit 1
     ;;
+  fail-accidental-done)
+    printf 'Sorry, the operation could not be done.\n'
+    exit 1
+    ;;
   empty-success)
     printf 'ok\n'
     exit 0
@@ -266,6 +270,9 @@ url_rc=
 url_run_id=
 local_rc=
 local_run_id=
+accidental_done_log=
+accidental_done_rc=
+accidental_done_run_id=
 
 echo ""
 echo "Test 1: repeated non-zero short output aborts before safety cap"
@@ -331,7 +338,35 @@ assert_eq "local finding progress records no agent-no-progress lenses" "0" "$(jq
 assert_eq "local finding progress records created findings" "3" "$(jq '[.lenses[] | select(.domain == "i18n" and .lens == "i18n-strings" and .status == "completed") | .issues_created] | .[0]' "$local_summary" 2>/dev/null || printf null)"
 
 echo ""
-echo "Test 6: resume clears stale no-progress run state and retries the failed lens"
+echo "Test 6: failed agent output ending in done does not satisfy completion"
+run_focus_case "accidental-done" "fail-accidental-done" accidental_done_log accidental_done_rc accidental_done_run_id
+accidental_done_summary="$SCRIPT_DIR/logs/$accidental_done_run_id/summary.json"
+assert_nonzero "accidental DONE failure exits non-zero" "$accidental_done_rc"
+assert_not_contains "accidental DONE failure does not log DONE detection" "DONE detected" "$accidental_done_log"
+assert_not_contains "accidental DONE failure does not complete on depth threshold" "DONE x1" "$accidental_done_log"
+assert_contains "accidental DONE failure trips no-progress breaker" "No-progress circuit breaker tripped" "$accidental_done_log"
+assert_file_exists "accidental DONE failure writes no-progress sentinel" "$SCRIPT_DIR/logs/$accidental_done_run_id/.agent-no-progress-abort"
+assert_eq "accidental DONE failure stopped_reason" "agent-no-progress" "$(jq -r '.stopped_reason' "$accidental_done_summary" 2>/dev/null || printf missing)"
+assert_eq "accidental DONE failure records agent-no-progress lens" "1" "$(jq '[.lenses[] | select(.status == "agent-no-progress")] | length' "$accidental_done_summary" 2>/dev/null || printf 0)"
+assert_eq "accidental DONE failure aborts after configured limit" "3" "$(jq '[.lenses[] | select(.status == "agent-no-progress") | .iterations] | .[0]' "$accidental_done_summary" 2>/dev/null || printf null)"
+accidental_done_lens="$(jq -r '[.lenses[] | select(.status == "agent-no-progress")] | .[0] | "\(.domain)/\(.lens)"' "$accidental_done_summary" 2>/dev/null || true)"
+if [[ -n "$accidental_done_lens" && "$accidental_done_lens" != "null/null" ]]; then
+  if grep -qxF "$accidental_done_lens" "$SCRIPT_DIR/logs/$accidental_done_run_id/.completed" 2>/dev/null; then
+    TOTAL=$((TOTAL + 1))
+    fail_with "accidental DONE failure remains resumable" "$accidental_done_lens was marked completed"
+  else
+    TOTAL=$((TOTAL + 1))
+    pass_with "accidental DONE failure remains resumable"
+  fi
+else
+  TOTAL=$((TOTAL + 1))
+  fail_with "accidental DONE failure remains resumable" "No agent-no-progress lens recorded"
+fi
+
+assert_eq "accidental DONE failure invokes fake agent until no-progress limit" "3" "$(cat "$TMPDIR/accidental-done/state/calls" 2>/dev/null || printf 0)"
+
+echo ""
+echo "Test 7: resume clears stale no-progress run state and retries the failed lens"
 resume_run_id="test-no-progress-resume-$RANDOM"
 resume_dir="$SCRIPT_DIR/logs/$resume_run_id"
 CREATED_RUNS+=("$resume_run_id")
