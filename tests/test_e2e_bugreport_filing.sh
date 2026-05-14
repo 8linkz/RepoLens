@@ -234,6 +234,7 @@ MOCK_LOG="$TMPDIR/mock-agent.log"
 GH_LOG="$TMPDIR/gh.log"
 BUG_FILE="$TMPDIR/bug-report.md"
 mkdir -p "$PROJECT_DIR" "$FAKE_BIN"
+export REPOLENS_MOCK_WRITE_FINDINGS_WITHOUT_LOCAL=1
 git -C "$PROJECT_DIR" init -q
 git -C "$PROJECT_DIR" remote add origin https://github.com/example/repo.git
 printf '# RepoLens issue 204 fixture\n' > "$PROJECT_DIR/README.md"

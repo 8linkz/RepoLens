@@ -166,8 +166,16 @@ emit_lens_findings() {
   log_role "lens"
   output_dir="$(printf '%s\n' "$prompt" | sed -n 's/^Write all findings to: `\(.*\)`$/\1/p' | sed -n '1p')"
   if [[ -z "$output_dir" ]]; then
-    printf 'DONE\nNo local output directory was rendered.\nDONE\n'
-    return 0
+    if [[ "${REPOLENS_MOCK_WRITE_FINDINGS_WITHOUT_LOCAL:-0}" == "1" && -n "${LOG_BASE:-}" ]]; then
+      round="$(extract_first_match 'round \*\*([0-9]+) of [0-9]+\*\*' "$prompt")"
+      [[ -n "$round" ]] || round="1"
+      domain="${REPOLENS_MOCK_LENS_DOMAIN:-security}"
+      lens="${REPOLENS_MOCK_LENS_ID:-injection}"
+      output_dir="$LOG_BASE/rounds/round-$round/lens-outputs/$domain/$lens"
+    else
+      printf 'DONE\nNo local output directory was rendered.\nDONE\n'
+      return 0
+    fi
   fi
 
   mkdir -p "$output_dir"

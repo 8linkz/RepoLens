@@ -2741,7 +2741,24 @@ if [[ "$RUN_ROUNDS_RC" -eq 0 && "${ROUNDS:-1}" -gt 1 ]]; then
       fi
     fi
   else
-    log_warn "Synthesizer: failed to produce a valid manifest"
+    synth_rc=$?
+    case "$synth_rc" in
+      3)
+        log_warn "Synthesizer: stopped due to rate limit"
+        ;;
+      4)
+        log_warn "Synthesizer: agent output did not contain a JSON array; see final/synthesizer-output.txt"
+        ;;
+      5)
+        log_warn "Synthesizer: manifest validation failed"
+        ;;
+      6)
+        log_warn "Synthesizer: agent invocation failed; see final/synthesizer-output.txt"
+        ;;
+      *)
+        log_warn "Synthesizer: failed to produce a valid manifest"
+        ;;
+    esac
     RUN_ROUNDS_RC=1
   fi
 fi

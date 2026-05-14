@@ -83,6 +83,16 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  TOTAL=$((TOTAL + 1))
+  if [[ "$haystack" != *"$needle"* ]]; then
+    pass_with "$desc"
+  else
+    fail_with "$desc" "Unexpectedly found '$needle' in: $haystack"
+  fi
+}
+
 assert_file_exists() {
   local desc="$1" path="$2"
   TOTAL=$((TOTAL + 1))
@@ -510,6 +520,20 @@ setup_run() {
   export LOG_BASE="$RUN_LOG"
 }
 
+setup_empty_run() {
+  local run="$1"
+  RUN_LOG="$TMPDIR/$run-logs/$run"
+  mkdir -p "$RUN_LOG/rounds/round-1/lens-outputs/code"
+  export LOG_BASE="$RUN_LOG"
+}
+
+setup_missing_rounds_run() {
+  local run="$1"
+  RUN_LOG="$TMPDIR/$run-logs/$run"
+  mkdir -p "$RUN_LOG"
+  export LOG_BASE="$RUN_LOG"
+}
+
 COMPOSE_LOG="$TMPDIR/compose.log"
 AGENT_LOG="$TMPDIR/agent.log"
 stub_compose_prompt() {
@@ -557,6 +581,43 @@ compose_calls=$(wc -l < "$COMPOSE_LOG" | tr -d ' ')
 assert_eq "run_agent called exactly once" "1" "$agent_calls"
 assert_eq "compose_prompt called exactly once" "1" "$compose_calls"
 assert_contains "TOTAL_FINDINGS counts nested lens outputs" "TOTAL_FINDINGS=2" "$(cat "$COMPOSE_LOG")"
+
+# Zero-finding runs are deterministic and do not invoke the agent.
+: > "$COMPOSE_LOG"
+: > "$AGENT_LOG"
+stub_compose_prompt
+run_agent() {
+  echo "call" >> "$AGENT_LOG"
+  echo "agent should not run for empty synthesis" >&2
+  return 99
+}
+setup_empty_run "run-empty"
+mkdir -p "$RUN_LOG/final"
+echo '[{"stale":true}]' > "$RUN_LOG/final/manifest.json"
+echo '[]' > "$RUN_LOG/final/cross-link-actions.preserved.json"
+run_synthesizer "run-empty" 2>"$TMPDIR/run-empty.err"
+status=$?
+assert_success "run_synthesizer short-circuits empty findings" "$status"
+assert_file_exists "empty manifest.json promoted" "$RUN_LOG/final/manifest.json"
+assert_eq "empty manifest is canonical array" "[]" "$(jq -c '.' "$RUN_LOG/final/manifest.json")"
+assert_file_missing "empty run removes stale preserved cross-link actions" "$RUN_LOG/final/cross-link-actions.preserved.json"
+agent_calls=$(wc -l < "$AGENT_LOG" | tr -d ' ')
+compose_calls=$(wc -l < "$COMPOSE_LOG" | tr -d ' ')
+assert_eq "run_agent not called for empty findings" "0" "$agent_calls"
+assert_eq "compose_prompt not called for empty findings" "0" "$compose_calls"
+assert_file_missing "empty run does not create synthesizer transcript" "$RUN_LOG/final/synthesizer-output.txt"
+
+: > "$COMPOSE_LOG"
+: > "$AGENT_LOG"
+setup_missing_rounds_run "run-no-rounds"
+run_synthesizer "run-no-rounds" 2>"$TMPDIR/run-no-rounds.err"
+status=$?
+assert_success "run_synthesizer short-circuits missing rounds directory" "$status"
+assert_eq "missing rounds manifest is canonical array" "[]" "$(jq -c '.' "$RUN_LOG/final/manifest.json")"
+agent_calls=$(wc -l < "$AGENT_LOG" | tr -d ' ')
+compose_calls=$(wc -l < "$COMPOSE_LOG" | tr -d ' ')
+assert_eq "run_agent not called when rounds directory is missing" "0" "$agent_calls"
+assert_eq "compose_prompt not called when rounds directory is missing" "0" "$compose_calls"
 
 # Min-severity filtering happens after schema validation, so valid
 # below-threshold entries are removed while invalid severities still fail.
@@ -687,6 +748,7 @@ setup_run "run-fail"
 run_synthesizer "run-fail" 2>"$TMPDIR/run-fail.err"
 status=$?
 assert_failure "run_synthesizer fails on invalid manifest" "$status"
+assert_eq "invalid manifest returns validation rc" "5" "$status"
 assert_file_missing "manifest.json absent on failure" "$RUN_LOG/final/manifest.json"
 assert_file_missing "candidate manifest cleaned up on failure" "$RUN_LOG/final/manifest.json.tmp.$$"
 
@@ -703,6 +765,9 @@ setup_run "run-no-json"
 run_synthesizer "run-no-json" 2>"$TMPDIR/run-no-json.err"
 status=$?
 assert_failure "run_synthesizer fails when no JSON array is emitted" "$status"
+assert_eq "missing JSON array returns extraction rc" "4" "$status"
+assert_file_exists "no-JSON synthesizer writes transcript" "$RUN_LOG/final/synthesizer-output.txt"
+assert_contains "no-JSON transcript preserves agent output" "I have nothing to report" "$(cat "$RUN_LOG/final/synthesizer-output.txt" 2>/dev/null)"
 assert_file_missing "no manifest.json when JSON array missing" "$RUN_LOG/final/manifest.json"
 
 # Stale manifest is removed on failure
@@ -731,6 +796,44 @@ if [[ "$candidate_count" -eq 0 ]]; then
 else
   fail_with "no candidate temp files left behind" "Found $candidate_count"
 fi
+
+# Failure path: direct non-rate-limit agent invocation failures are distinct
+# from generic synthesis failures and remain visible to the orchestrator.
+: > "$COMPOSE_LOG"
+: > "$AGENT_LOG"
+stub_compose_prompt
+run_agent() {
+  echo "call" >> "$AGENT_LOG"
+  echo "agent subprocess exited before producing a manifest"
+  return 42
+}
+setup_run "run-agent-fail"
+mkdir -p "$RUN_LOG/final"
+echo '[]' > "$RUN_LOG/final/manifest.json"
+echo '[]' > "$RUN_LOG/final/cross-link-actions.preserved.json"
+run_synthesizer "run-agent-fail" 2>"$TMPDIR/run-agent-fail.err"
+status=$?
+assert_failure "run_synthesizer fails when agent invocation fails" "$status"
+assert_eq "agent invocation failure returns distinct rc" "6" "$status"
+assert_file_exists "agent invocation failure writes transcript" "$RUN_LOG/final/synthesizer-output.txt"
+assert_contains "agent invocation transcript preserves agent output" "agent subprocess exited" "$(cat "$RUN_LOG/final/synthesizer-output.txt" 2>/dev/null)"
+assert_file_missing "agent invocation failure removes stale manifest" "$RUN_LOG/final/manifest.json"
+assert_file_missing "agent invocation failure removes stale preserved cross-link actions" "$RUN_LOG/final/cross-link-actions.preserved.json"
+
+orchestrator_synth_case="$(awk '/case "\$synth_rc" in/{flag=1} flag{print} flag && /esac/{exit}' "$SCRIPT_DIR/repolens.sh")"
+orchestrator_warning="$(
+  synth_rc=6
+  log_warn() {
+    printf '%s\n' "$*"
+  }
+  eval "$orchestrator_synth_case"
+)"
+assert_contains "orchestrator maps agent invocation rc to specific warning" \
+  "Synthesizer: agent invocation failed; see final/synthesizer-output.txt" \
+  "$orchestrator_warning"
+assert_not_contains "orchestrator agent invocation rc avoids generic manifest warning" \
+  "Synthesizer: failed to produce a valid manifest" \
+  "$orchestrator_warning"
 
 # Failure path: direct agent rate-limit failures are distinguished from
 # generic manifest failures and leave operator-visible abort state.

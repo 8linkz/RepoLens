@@ -611,7 +611,25 @@ run_synthesizer() {
 
   local total_findings=0
   if [[ -d "$rounds_dir" ]]; then
-    total_findings=$(find "$rounds_dir" -path '*/lens-outputs/*.md' -type f 2>/dev/null | wc -l | tr -d ' ')
+    total_findings=$(find "$rounds_dir" -path '*/lens-outputs/*' -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+  fi
+
+  # Zero findings require no model work. Write the canonical empty manifest so
+  # downstream consumers can distinguish a correct empty run from synthesis
+  # failure.
+  if (( total_findings == 0 )); then
+    candidate="$final_dir/manifest.json.tmp.$$"
+    if ! printf '[]\n' > "$candidate"; then
+      echo "run_synthesizer: failed to write empty manifest.json" >&2
+      rm -f "$candidate"
+      return 1
+    fi
+    if ! mv "$candidate" "$final_dir/manifest.json"; then
+      echo "run_synthesizer: failed to promote empty manifest.json" >&2
+      rm -f "$candidate"
+      return 1
+    fi
+    return 0
   fi
 
   local total_rounds="${ROUNDS:-1}"
@@ -669,17 +687,20 @@ run_synthesizer() {
     if (( phase_rc != 0 )); then
       rm -f "$final_dir/manifest.json"
       rm -f "$final_dir/cross-link-actions.preserved.json"
+      if (( phase_rc == 1 )); then
+        return 6
+      fi
       return "$phase_rc"
     fi
   elif (( agent_rc != 0 )); then
     echo "run_synthesizer: agent invocation failed" >&2
-    return 1
+    return 6
   fi
 
   local extracted
   extracted="$(_synthesize_extract_json_array "$agent_output")" || {
     echo "run_synthesizer: agent output did not contain a JSON array" >&2
-    return 1
+    return 4
   }
 
   candidate="$final_dir/manifest.json.tmp.$$"
@@ -693,7 +714,7 @@ run_synthesizer() {
     rm -f "$candidate"
     rm -f "$final_dir/manifest.json"
     rm -f "$final_dir/cross-link-actions.preserved.json"
-    return 1
+    return 5
   fi
 
   if [[ -n "${REPOLENS_MIN_SEVERITY:-}" ]]; then
@@ -714,7 +735,7 @@ run_synthesizer() {
     rm -f "$candidate"
     rm -f "$final_dir/manifest.json"
     rm -f "$final_dir/cross-link-actions.preserved.json"
-    return 1
+    return 5
   fi
 
   if ! mv "$candidate" "$final_dir/manifest.json"; then
