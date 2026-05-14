@@ -1342,6 +1342,10 @@ if [[ -n "$RESUME_RUN_ID" && -f "$LOG_BASE/.agent-no-progress-abort" ]]; then
   rm -f "$LOG_BASE/.agent-no-progress-abort"
   clear_stop_reason "$SUMMARY_FILE"
 fi
+if [[ -n "$RESUME_RUN_ID" && -f "$LOG_BASE/.rate-limit-abort" ]]; then
+  rm -f "$LOG_BASE/.rate-limit-abort"
+  clear_stop_reason "$SUMMARY_FILE"
+fi
 if [[ -n "$RESUME_RUN_ID" && -f "$LOG_BASE/.systemic-failure-abort" ]]; then
   rm -f "$LOG_BASE/.systemic-failure-abort"
   clear_stop_reason "$SUMMARY_FILE"

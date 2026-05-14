@@ -226,6 +226,64 @@ else
   echo "  PASS: .completed file not present — resume correctness preserved"
 fi
 
+# ----------------------------------------------------------------------
+# Assertion: --resume clears the stale rate-limit sentinel and retries
+# ----------------------------------------------------------------------
+cat > "$FAKE_BIN/codex" <<'SH'
+#!/usr/bin/env bash
+state_dir="${FAKE_AGENT_STATE_DIR:-}"
+if [[ -n "$state_dir" ]]; then
+  mkdir -p "$state_dir"
+  calls_file="$state_dir/calls"
+  calls=0
+  [[ -f "$calls_file" ]] && calls="$(cat "$calls_file" 2>/dev/null || printf 0)"
+  calls=$((calls + 1))
+  printf '%s\n' "$calls" > "$calls_file"
+fi
+cat <<'MSG'
+DONE
+MSG
+exit 0
+SH
+chmod +x "$FAKE_BIN/codex"
+
+RESUME_OUT_FILE="$TMPDIR/resume.log"
+RESUME_STATE="$TMPDIR/resume-state"
+set +e
+FAKE_AGENT_STATE_DIR="$RESUME_STATE" \
+bash "$SCRIPT_DIR/repolens.sh" \
+  --project "$PROJECT" \
+  --agent codex \
+  --domain i18n \
+  --mode audit \
+  --local \
+  --yes \
+  --resume "$run_id" \
+  >"$RESUME_OUT_FILE" 2>&1
+resume_exit_code=$?
+set -e
+
+assert_eq "Resume after rate-limit succeeds" "0" "$resume_exit_code"
+TOTAL=$((TOTAL + 1))
+if [[ ! -f "$SCRIPT_DIR/logs/$run_id/.rate-limit-abort" ]]; then
+  PASS=$((PASS + 1))
+  echo "  PASS: Resume removes stale rate-limit sentinel"
+else
+  FAIL=$((FAIL + 1))
+  echo "  FAIL: Resume left stale rate-limit sentinel in place"
+fi
+assert_eq "Resume clears stale stopped_reason" "null" "$(jq -r '.stopped_reason' "$summary_file" 2>/dev/null || printf missing)"
+assert_contains "Resume marks rate-limited lens completed" "$rl_lens_id" "$(cat "$completed_file" 2>/dev/null || true)"
+TOTAL=$((TOTAL + 1))
+resume_calls="$(cat "$RESUME_STATE/calls" 2>/dev/null || printf 0)"
+if [[ "$resume_calls" -ge 1 ]]; then
+  PASS=$((PASS + 1))
+  echo "  PASS: Resume invoked fake agent for pending lens work"
+else
+  FAIL=$((FAIL + 1))
+  echo "  FAIL: Resume did not invoke fake agent"
+fi
+
 echo ""
 echo "=== Results: $PASS/$TOTAL passed, $FAIL failed ==="
 exit "$FAIL"
