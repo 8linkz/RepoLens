@@ -90,7 +90,7 @@ mkdir -p "$PROJECT"
   git commit -q -m init 2>/dev/null
 ) || true
 
-# Fake agent: emits the exact incident rate-limit string and exits non-zero.
+# Fake agent: emits the exact Claude user-tier rate-limit string and exits non-zero.
 # repolens.sh's run_agent invokes `codex exec --yolo <prompt>`; the stub
 # ignores all args and just prints the signature.
 FAKE_BIN="$TMPDIR/bin"
@@ -98,8 +98,7 @@ mkdir -p "$FAKE_BIN"
 cat > "$FAKE_BIN/codex" <<'SH'
 #!/usr/bin/env bash
 cat <<'MSG'
-ERROR: You've hit your usage limit. To get more access now, send a request to your
-admin or try again at Apr 16th, 2026 12:04 AM.
+You've hit your limit · resets 11:30pm (Europe/Berlin)
 MSG
 exit 1
 SH
@@ -162,7 +161,7 @@ fi
 log_contents="$(cat "$OUT_FILE")"
 assert_contains "Log contains [ERROR] prefix" "[ERROR]" "$log_contents"
 assert_contains "Log mentions rate-limited / quota exceeded" "rate-limited" "$log_contents"
-assert_contains "Log surfaces the matched snippet" "usage limit" "$log_contents"
+assert_contains "Log surfaces the matched snippet" "resets 11:30pm" "$log_contents"
 
 # ----------------------------------------------------------------------
 # Assertion 3: did NOT iterate to the safety cap

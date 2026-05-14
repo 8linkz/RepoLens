@@ -26,6 +26,7 @@ FAIL=0
 TOTAL=0
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
+FIXTURE_DIR="$SCRIPT_DIR/tests/fixtures/agent-rate-limits"
 
 assert_detect() {
   local desc="$1" file="$2" expected="$3"
@@ -60,6 +61,12 @@ assert_output_contains_pipe() {
 }
 
 echo "=== detect_agent_rate_limit — positive signatures ==="
+
+if [[ -d "$FIXTURE_DIR" ]]; then
+  while IFS= read -r fixture; do
+    assert_detect "positive fixture: ${fixture##*/}" "$fixture" "yes"
+  done < <(find "$FIXTURE_DIR" -maxdepth 1 -type f -name '*.txt' -print | sort)
+fi
 
 # Signature 1: "You've hit your usage limit" (exact incident text)
 f="$TMPDIR/sig1.txt"
@@ -155,6 +162,10 @@ f="$TMPDIR/ansi2.txt"
 printf '\e[0m\e[33m403 Forbidden\e[0m\n' > "$f"
 assert_detect "ANSI-wrapped '403 Forbidden'" "$f" "yes"
 
+f="$TMPDIR/ansi_user_tier.txt"
+printf '\e[1;31mYou'\''ve hit your limit · resets 11:30pm (Europe/Berlin)\e[0m\n' > "$f"
+assert_detect "ANSI-wrapped Claude user-tier limit reset" "$f" "yes"
+
 echo ""
 echo "=== Multi-line realistic fixtures ==="
 
@@ -232,6 +243,10 @@ f="$TMPDIR/neg_plain_usage_limit.txt"
 printf "Finding: the project has a configurable usage limit for free-tier accounts.\nDONE\n" > "$f"
 assert_detect "Plain finding sentence with usage limit but no error context" "$f" "no"
 
+f="$TMPDIR/neg_bare_hit_your_limit.txt"
+printf "Finding: the signup form says you've hit your limit when a plan quota is exhausted.\nDONE\n" > "$f"
+assert_detect "Bare you've-hit-your-limit copy without resets marker" "$f" "no"
+
 f="$TMPDIR/neg_gh_issue_list_closed.txt"
 {
   printf "Checking closed issues before filing...\n"
@@ -239,6 +254,14 @@ f="$TMPDIR/neg_gh_issue_list_closed.txt"
   printf "tool failed: command timed out\n"
 } > "$f"
 assert_detect "closed gh issue list row with rate limit in title" "$f" "no"
+
+f="$TMPDIR/neg_gh_issue_list_user_tier_title.txt"
+{
+  printf "Checking existing issues before filing...\n"
+  printf "209\tOPEN\t[HIGH] Claude says You've hit your limit · resets 11:30pm (Europe/Berlin)\tbug\t2026-05-13T09:34:55Z\n"
+  printf "tool failed: command timed out\n"
+} > "$f"
+assert_detect "gh issue list row with Claude user-tier limit title" "$f" "no"
 
 echo ""
 echo "=== gh 401 leakage (must NOT reach detector — but verify fixture-safely) ==="

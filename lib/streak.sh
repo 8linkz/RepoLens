@@ -110,6 +110,7 @@ count_dry_run_issues() {
 # ordinary command output, including issue titles about rate limiting.
 _REPOLENS_RATE_LIMIT_PATTERNS=(
   "you('|’)?ve hit your usage limit"
+  "you('|’)?ve hit your[[:space:]]+limit[[:space:]]*·[[:space:]]*resets[[:space:]]"
   "usage limit (exceeded|reached|hit)"
   "(error|fatal|failed|failure|exception|http|api|request|provider|claude|codex|opencode|spark)[^[:alnum:]_].*rate[- ]?limit(ed|ing|s)?"
   "rate[- ]?limit(ed|ing|s)?([^[:alnum:]_]|$).*(exceeded|reached|hit|retry-after|try again|until)"
