@@ -404,22 +404,24 @@ assert_eq "tea branch passes supported issue-list flags in order" \
   "issues list --repo $FORGE_TEST_PROJECT --remote origin --labels audit:demo --state open --limit 1000 --output json" "$logged"
 
 echo ""
-echo "Test 9: fj backend counts open issues with the expected issue-search argv"
+echo "Test 9: fj backend counts open issues with the expected issue-search argv (JSON-first per #244)"
 reset_fake_gh
 reset_fake_fj
 fj_log="$TMPDIR/t9-fj.log"
 : > "$fj_log"
 FORGE_HOST=codeberg.org
 REPOLENS_FAKE_FJ_RC=0
-REPOLENS_FAKE_FJ_STDOUT='2 issues'
+# fj's --style json output is a JSON array of matching issues; the wrapper
+# counts via `jq 'length'` rather than parsing a leading text line.
+REPOLENS_FAKE_FJ_STDOUT='[{"number":1},{"number":2}]'
 REPOLENS_FAKE_FJ_LOG="$fj_log"
 out="$(run_wrapper fj forge_issue_list_count owner/repo audit:demo 2>/dev/null)"
 rc=$?
 logged="$(cat "$fj_log")"
 assert_rc_zero "fj branch exits zero on successful issue-search count" "$rc"
-assert_eq "fj branch prints parsed count" "2" "$out"
-assert_eq "fj branch passes supported issue-search flags in order" \
-  "-H codeberg.org --style minimal issue search --repo owner/repo --labels audit:demo --state open" "$logged"
+assert_eq "fj branch prints jq-derived length" "2" "$out"
+assert_eq "fj branch passes supported issue-search flags in order (JSON-first)" \
+  "-H codeberg.org --style json issue search --repo owner/repo --labels audit:demo --state open" "$logged"
 
 echo ""
 echo "Test 10: empty FORGE_PROVIDER returns non-zero without invoking a forge CLI"

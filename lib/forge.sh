@@ -836,11 +836,11 @@ forge_issue_list_count() {
       local fj_err fj_out fj_rc
       fj_err="$(mktemp 2>/dev/null)" || fj_err=""
       if [[ -n "$fj_err" ]]; then
-        fj_out="$(fj -H "$FORGE_HOST" --style minimal issue search \
+        fj_out="$(fj -H "$FORGE_HOST" --style json issue search \
           --repo "$repo" --labels "$label" --state open 2>"$fj_err")"
         fj_rc=$?
       else
-        fj_out="$(fj -H "$FORGE_HOST" --style minimal issue search \
+        fj_out="$(fj -H "$FORGE_HOST" --style json issue search \
           --repo "$repo" --labels "$label" --state open 2>/dev/null)"
         fj_rc=$?
       fi
@@ -855,14 +855,27 @@ forge_issue_list_count() {
       fi
       [[ -n "$fj_err" ]] && rm -f "$fj_err"
 
+      # Prefer structured JSON output: `jq 'length'` mirrors gh and tea.
+      if [[ -n "$fj_out" ]]; then
+        local n
+        if n="$(printf '%s' "$fj_out" | jq 'length' 2>/dev/null)" \
+           && [[ "$n" =~ ^[0-9]+$ ]]; then
+          printf '%s\n' "$n"
+          return 0
+        fi
+      fi
+
+      # Fallback: fj versions without --style json still emit the
+      # minimal-style "N issue(s)" leading line. Lowercase to tolerate
+      # case drift ("2 Issues") that broke the original strict regex.
       local first_line
       first_line="$(printf '%s\n' "$fj_out" | sed -n '1p')"
-      if [[ "$first_line" =~ ^[[:space:]]*([0-9]+)[[:space:]]+issues?[[:space:]]*$ ]]; then
+      if [[ "${first_line,,}" =~ ^[[:space:]]*([0-9]+)[[:space:]]+issues?[[:space:]]*$ ]]; then
         printf '%s\n' "${BASH_REMATCH[1]}"
         return 0
       fi
 
-      _forge_warn "forge_issue_list_count: could not parse fj output for repo=$repo label=$label first_line='${first_line:-<empty>}'"
+      _forge_warn "forge_issue_list_count: fj output unrecognized for repo=$repo label=$label first_line='${first_line:-<empty>}'"
       return 1
       ;;
     *)
