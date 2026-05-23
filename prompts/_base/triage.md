@@ -41,7 +41,12 @@ Perform the following structured-extraction steps in order. Stay focused. Be fas
 
 6. **Empty-input fallback.** If the bug report mentions **zero files and zero issue numbers**, run `git log -10 --oneline` on the default branch and emit a minimal hypothesis tree based on the bug report wording and the recent commit subjects. Do not fail.
 
-7. **Investigation seeds.** Decompose the bug report into N *orthogonal* angles for round-1 broader investigation. An angle is one short noun phrase naming a subsystem, layer, or failure mode that could plausibly produce the symptom — e.g. "session-token refresh path", "Android lifecycle Pause/Resume", "sqlite WAL checkpoint timing". Emit **5–10 seeds**; the controller selects N based on `--wave-width`. Seeds are distinct (no duplicates), single-line noun phrases, and refer to subsystems/layers/failure modes — not to fixes, opinions, or instructions.
+7. **Relevant domains.** From the menu of analysis domains listed under `Available domains` below, pick the subset that any plausible mechanism behind this bug could touch. **Be permissive** — include the domain if there is any defensible angle for it; exclude it only when it is clearly orthogonal (e.g. `visual-design` for a sqflite WAL crash, `iac` for a Flutter UI freeze). Output one domain id per line as bullets under the `## Relevant domains` heading; use only ids from the menu verbatim. The dispatcher intersects this list with the full default-mode lens list to prune the round-1 fanout; omitting domains is how you save agent-cost. If you cannot decide, keep the domain. Do **not** invent new domain ids.
+
+   Available domains:
+{{AVAILABLE_DOMAINS}}
+
+8. **Investigation seeds.** Decompose the bug report into N *orthogonal* angles for round-1 broader investigation. An angle is one short noun phrase naming a subsystem, layer, or failure mode that could plausibly produce the symptom — e.g. "session-token refresh path", "Android lifecycle Pause/Resume", "sqlite WAL checkpoint timing". Emit **5–10 seeds**; the controller selects N based on `--wave-width`. Seeds are distinct (no duplicates), single-line noun phrases, and refer to subsystems/layers/failure modes — not to fixes, opinions, or instructions.
 
 ## Required output schema
 
@@ -66,6 +71,10 @@ Emit **exactly** the markdown below on stdout. Do not wrap it in code fences. Th
 ## Initial hypothesis tree
 1. <one-sentence hypothesis with file/commit pointer>
 2. <one-sentence hypothesis with file/commit pointer>
+
+## Relevant domains
+- <domain-id-from-available-domains-menu>
+- <domain-id-from-available-domains-menu>
 
 ## Investigation seeds (broader-mode wave-1 dispatch)
 1. <noun-phrase angle>

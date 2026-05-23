@@ -1620,8 +1620,42 @@ resolve_lenses() {
   fi
 
   # All lenses — ordered by domain order
-  jq -r --arg mode "$MODE" --arg deploy_domain "$deploy_domain" \
-    '.domains | sort_by(.order)[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain) elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content") end) | .id as $d | .lenses[] | $d + "/" + .' "$DOMAINS_FILE"
+  local _all_lenses
+  _all_lenses="$(jq -r --arg mode "$MODE" --arg deploy_domain "$deploy_domain" \
+    '.domains | sort_by(.order)[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain) elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content") end) | .id as $d | .lenses[] | $d + "/" + .' "$DOMAINS_FILE")"
+
+  # Bugreport mode: when the triage agent has produced a relevant-domains
+  # whitelist, intersect by domain prefix. Missing-or-empty file → full
+  # fanout (the safe path: matches behavior pre-issue #227 and avoids the
+  # zero-lens edge case from agent over-pruning).
+  local _relevant_file="${LOG_BASE:-}/triage/relevant-domains.txt"
+  if [[ "$MODE" == "bugreport" && -s "$_relevant_file" ]]; then
+    local -A _keep=()
+    local _dom_keep _kept_count=0
+    while IFS= read -r _dom_keep; do
+      [[ -z "$_dom_keep" ]] && continue
+      _keep["$_dom_keep"]=1
+      _kept_count=$((_kept_count + 1))
+    done < "$_relevant_file"
+
+    if (( _kept_count > 0 )); then
+      local _pruned _entry _entry_domain
+      _pruned=""
+      while IFS= read -r _entry; do
+        [[ -z "$_entry" ]] && continue
+        _entry_domain="${_entry%%/*}"
+        if [[ -n "${_keep[$_entry_domain]:-}" ]]; then
+          _pruned+="$_entry"$'\n'
+        fi
+      done <<< "$_all_lenses"
+      _pruned="${_pruned%$'\n'}"
+      if [[ -n "$_pruned" ]]; then
+        _all_lenses="$_pruned"
+      fi
+    fi
+  fi
+
+  printf '%s\n' "$_all_lenses"
 }
 
 LENS_LIST=()
@@ -2754,6 +2788,37 @@ if [[ "$MODE" == "bugreport" && "${NO_TRIAGE:-true}" != "true" ]]; then
   else
     log_warn "Triage: failed — proceeding with empty context pack"
   fi
+fi
+
+# Issue #227: re-prune LENS_LIST against the relevant-domains whitelist that
+# triage just produced. resolve_lenses already consults the file (used by the
+# resume path), but on a fresh run LENS_LIST was computed before triage. Only
+# applies when the catch-all branch was taken — explicit --focus / --domain
+# user overrides bypass the whitelist entirely.
+if [[ "$MODE" == "bugreport" && -z "$FOCUS" && -z "$DOMAIN_FILTER" \
+      && -s "$LOG_BASE/triage/relevant-domains.txt" ]]; then
+  declare -A _RELEVANT_DOMAINS_KEEP=()
+  while IFS= read -r _relevant_domain_id; do
+    [[ -z "$_relevant_domain_id" ]] && continue
+    _RELEVANT_DOMAINS_KEEP["$_relevant_domain_id"]=1
+  done < "$LOG_BASE/triage/relevant-domains.txt"
+
+  if (( ${#_RELEVANT_DOMAINS_KEEP[@]} > 0 )); then
+    _PRUNED_LENS_LIST=()
+    for _lens_entry in "${LENS_LIST[@]}"; do
+      _lens_entry_domain="${_lens_entry%%/*}"
+      if [[ -n "${_RELEVANT_DOMAINS_KEEP[$_lens_entry_domain]:-}" ]]; then
+        _PRUNED_LENS_LIST+=("$_lens_entry")
+      fi
+    done
+    if (( ${#_PRUNED_LENS_LIST[@]} > 0 )); then
+      _ORIGINAL_LENS_COUNT="${#LENS_LIST[@]}"
+      LENS_LIST=("${_PRUNED_LENS_LIST[@]}")
+      TOTAL_LENSES=${#LENS_LIST[@]}
+      log_info "Triage relevant-domains filter: pruned $((_ORIGINAL_LENS_COUNT - TOTAL_LENSES))/$_ORIGINAL_LENS_COUNT lenses, kept $TOTAL_LENSES"
+    fi
+  fi
+  unset _RELEVANT_DOMAINS_KEEP _PRUNED_LENS_LIST _lens_entry _lens_entry_domain _relevant_domain_id _ORIGINAL_LENS_COUNT
 fi
 
 # --- Execute lenses ---

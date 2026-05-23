@@ -130,6 +130,126 @@ _triage_extract_investigation_seeds() {
   return 0
 }
 
+# _triage_default_mode_domain_ids <domains_file>
+#   Emits, one per line, the IDs of every domain in <domains_file> whose mode
+#   is unset or "default" (i.e. the default-mode domains that bugreport runs
+#   would otherwise fan out across). Used both to build the {{AVAILABLE_DOMAINS}}
+#   prompt menu and to whitelist the agent's relevant-domains output so unknown
+#   ids cannot accidentally widen or zero-out the lens list.
+_triage_default_mode_domain_ids() {
+  local domains_file="$1"
+  if [[ ! -f "$domains_file" ]]; then
+    return 0
+  fi
+  jq -r '
+    .domains
+    | sort_by(.order // 0)
+    | map(select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content"))
+    | .[].id
+  ' "$domains_file" 2>/dev/null || true
+}
+
+# _triage_extract_relevant_domains <src_path> <dst_path> <domains_file>
+#   Parses the `## Relevant domains` markdown section from <src_path> and writes
+#   one cleaned domain id per line to <dst_path>. The section is captured from
+#   the first `## Relevant domains` heading (with or without trailing
+#   parenthetical suffix) until the next `## ` heading or EOF.
+#
+#   Each captured line is sanitized:
+#     - leading list markers (`1.`, `2)`, `-`, `*`, `+`) are stripped
+#     - trailing parenthetical notes (`security (auth angle)`) are stripped
+#     - surrounding whitespace is trimmed
+#     - blank lines, `DONE` markers, and `(none)` placeholders are dropped
+#     - duplicate entries are removed (first occurrence wins)
+#     - any id NOT in the default-mode domain whitelist derived from
+#       <domains_file> is silently dropped — protects the dispatcher from
+#       hallucinated or stale domain ids
+#   The destination file is always created (possibly empty) when the source
+#   exists. Returns 0 on success even when no domains are found.
+_triage_extract_relevant_domains() {
+  local src="$1" dst="$2" domains_file="$3"
+  local tmp_dst
+  tmp_dst="${dst}.tmp.$$"
+
+  : > "$tmp_dst" || return 1
+
+  if [[ ! -f "$src" ]]; then
+    mv "$tmp_dst" "$dst" 2>/dev/null || rm -f "$tmp_dst"
+    return 1
+  fi
+
+  awk '
+    BEGIN { in_section = 0 }
+    /^##[[:space:]]+Relevant domains/ {
+      in_section = 1
+      next
+    }
+    in_section && /^##[[:space:]]+/ {
+      in_section = 0
+    }
+    in_section { print }
+  ' "$src" > "$tmp_dst.raw" || {
+    rm -f "$tmp_dst" "$tmp_dst.raw"
+    return 1
+  }
+
+  local -A allowed=()
+  if [[ -n "$domains_file" ]]; then
+    local known
+    while IFS= read -r known; do
+      [[ -z "$known" ]] && continue
+      allowed["$known"]=1
+    done < <(_triage_default_mode_domain_ids "$domains_file")
+  fi
+
+  local -A seen=()
+  local raw_line entry
+  while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
+    entry="$raw_line"
+    entry="${entry//$'\r'/}"
+    entry="${entry//$'\t'/ }"
+    entry="${entry//|/ }"
+    # Trim leading whitespace
+    entry="${entry#"${entry%%[![:space:]]*}"}"
+    # Strip leading list marker: digits with `.` or `)`, or `-`, `*`, `+`
+    if [[ "$entry" =~ ^([0-9]+[\.\)]|[-*+])[[:space:]]+(.*)$ ]]; then
+      entry="${BASH_REMATCH[2]}"
+    fi
+    # Strip backticks / code-fence markers around the id
+    entry="${entry//\`/}"
+    # Drop a trailing parenthetical "id (note)" or "id - note" or "id: note"
+    # so the artifact stays a clean id list. Match the FIRST id-shaped token.
+    if [[ "$entry" =~ ^([A-Za-z0-9][A-Za-z0-9_-]*) ]]; then
+      entry="${BASH_REMATCH[1]}"
+    fi
+    # Collapse internal whitespace runs to a single space
+    entry="$(printf '%s' "$entry" | tr -s '[:space:]' ' ')"
+    # Trim leading/trailing whitespace
+    entry="${entry#"${entry%%[![:space:]]*}"}"
+    entry="${entry%"${entry##*[![:space:]]}"}"
+
+    [[ -z "$entry" ]] && continue
+    [[ "$entry" == "DONE" ]] && continue
+    [[ "$entry" == "(none)" ]] && continue
+    [[ "$entry" == "none" ]] && continue
+    if [[ -n "${seen[$entry]:-}" ]]; then
+      continue
+    fi
+    if (( ${#allowed[@]} > 0 )) && [[ -z "${allowed[$entry]:-}" ]]; then
+      continue
+    fi
+    seen["$entry"]=1
+    printf '%s\n' "$entry" >> "$tmp_dst"
+  done < "$tmp_dst.raw"
+  rm -f "$tmp_dst.raw"
+
+  if ! mv "$tmp_dst" "$dst"; then
+    rm -f "$tmp_dst"
+    return 1
+  fi
+  return 0
+}
+
 # _triage_truncate_pack <src_path> <dst_path>
 #   Copies up to TRIAGE_PACK_MAX_BYTES from <src_path> into <dst_path>. If the
 #   source exceeds the cap, the destination is truncated and a deterministic
@@ -213,6 +333,8 @@ run_triage() {
     return 1
   }
 
+  local domains_file="${DOMAINS_FILE:-$repo_root/config/domains.json}"
+
   # Idempotence: --resume re-enters with the same run id. If a non-empty pack
   # already exists, keep it; do not pay the agent cost again.
   if [[ -s "$pack_file" ]]; then
@@ -220,6 +342,15 @@ run_triage() {
     # if extraction fails we still consider the cached pack canonical.
     if [[ ! -f "$triage_dir/investigation-seeds.txt" ]]; then
       _triage_extract_investigation_seeds "$pack_file" "$triage_dir/investigation-seeds.txt" || true
+    fi
+    # Backfill the relevant-domains artifact the same way. Prefer the raw
+    # transcript when present (it survives the 2 KB cap); fall back to the pack.
+    if [[ ! -f "$triage_dir/relevant-domains.txt" ]]; then
+      local backfill_src="$pack_file"
+      if [[ -s "$transcript_file" ]]; then
+        backfill_src="$transcript_file"
+      fi
+      _triage_extract_relevant_domains "$backfill_src" "$triage_dir/relevant-domains.txt" "$domains_file" || true
     fi
     return 0
   fi
@@ -238,12 +369,26 @@ run_triage() {
   local repo_name="${REPO_NAME:-}"
   local bug_report_file="${BUG_REPORT_FILE:-}"
 
+  # Build the default-mode domain menu the triage agent picks from. Indented as
+  # a markdown bullet list so it slots cleanly under the step-7 prose. Empty
+  # when DOMAINS_FILE is unreadable — the prompt then degrades to "no menu
+  # available" and the dispatcher whitelist will drop every emitted id, which
+  # falls through to full fanout (the safe path).
+  local available_domains=""
+  local _dom
+  while IFS= read -r _dom; do
+    [[ -z "$_dom" ]] && continue
+    available_domains+="   - ${_dom}"$'\n'
+  done < <(_triage_default_mode_domain_ids "$domains_file")
+  available_domains="${available_domains%$'\n'}"
+
   local vars
   vars="RUN_ID=$run_id"
   vars+="|MODE=$mode"
   vars+="|PROJECT_PATH=$project_path"
   vars+="|REPO_OWNER=$repo_owner"
   vars+="|REPO_NAME=$repo_name"
+  vars+="|AVAILABLE_DOMAINS=$available_domains"
   if [[ -n "$bug_report_file" && -f "$bug_report_file" ]]; then
     vars+="|BUG_REPORT=@${bug_report_file}"
   fi
@@ -298,6 +443,13 @@ run_triage() {
   # bugreport wave-1 selection falls back to full fanout when seeds are missing.
   local seeds_file="$triage_dir/investigation-seeds.txt"
   _triage_extract_investigation_seeds "$raw_pack" "$seeds_file" || true
+
+  # Extract the relevant-domains list from the same pre-truncation transcript.
+  # The dispatcher intersects this with the full default-mode lens list to
+  # prune round-1 fanout. Failure is non-fatal: missing or empty file means
+  # the dispatcher falls through to full fanout.
+  local relevant_domains_file="$triage_dir/relevant-domains.txt"
+  _triage_extract_relevant_domains "$raw_pack" "$relevant_domains_file" "$domains_file" || true
 
   local candidate
   candidate="$triage_dir/context-pack.md.tmp.$$"
