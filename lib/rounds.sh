@@ -2114,7 +2114,7 @@ run_rounds() {
       dispatch_path=""
       if (( round == 1 )) \
           && [[ "${MODE:-}" == "bugreport" ]] \
-          && [[ "${STRATEGY:-}" == "waves" || "${REPOLENS_STRATEGY:-}" == "waves" ]]; then
+          && [[ "${STRATEGY:-}" == "waves" ]]; then
         if _rounds_select_wave_1 "${RUN_ID:-}"; then
           dispatch_path="${LOG_BASE:-}/rounds/round-0/dispatch.md"
         else

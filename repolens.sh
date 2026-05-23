@@ -146,6 +146,11 @@ Options:
                            1 otherwise. Must be between 1 and 19.
   --rounds <n>            Cross-lens rounds (default: 1; capped per mode —
                            deploy/opensource/content/discover locked to 1)
+  --strategy <name>       Bugreport round-1 strategy: fanout (default — all
+                           lenses run as the round-1 dispatch) | waves (N
+                           triage-seeded GENERIC investigators, width =
+                           REPOLENS_WAVE_WIDTH, default 7, clamped to 1..50).
+                           Requires --mode bugreport when set to waves.
   --no-verifier           Skip the post-rounds verifier step. Defaults: ON for
                            --mode bugreport (evidence accuracy is critical when
                            filing bug reports); OFF for every other mode.
@@ -286,6 +291,12 @@ Environment:
                            when the CLI flag is not used.
   REPOLENS_CROSS_LINK      Fallback for --cross-link. Accepts off|comment|
                            suggest-reopen. Used only when the CLI flag is unset.
+  REPOLENS_STRATEGY        Fallback for --strategy when the CLI flag is unset.
+                           Accepted values: fanout, waves. Only meaningful for
+                           --mode bugreport.
+  REPOLENS_WAVE_WIDTH      Number of GENERIC investigators dispatched in
+                           bugreport waves round 1 (default 7, clamped to
+                           1..50).
   REPOLENS_HEARTBEAT_INTERVAL
                            Per-lens heartbeat file interval in seconds
                            (default: 15), and parallel-worker log heartbeat
@@ -414,6 +425,8 @@ NO_TRIAGE=""
 NO_TRIAGE_SET=false
 CROSS_LINK_MODE=""
 CROSS_LINK_MODE_SET=false
+STRATEGY=""
+STRATEGY_SET=false
 CHANGE_STATEMENT=""
 BUG_REPORT=""
 BUG_REPORT_SET=false
@@ -524,6 +537,15 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || die "Option --cross-link requires an argument (off|comment|suggest-reopen)."
       CROSS_LINK_MODE="$2"
       CROSS_LINK_MODE_SET=true
+      shift 2
+      ;;
+    --strategy)
+      [[ $# -ge 2 ]] || die "Option --strategy requires an argument (fanout|waves)."
+      case "$2" in
+        fanout|waves) STRATEGY="$2" ;;
+        *) die "Invalid --strategy: '$2' (expected 'fanout' or 'waves')." ;;
+      esac
+      STRATEGY_SET=true
       shift 2
       ;;
     --change)
@@ -666,6 +688,24 @@ case "$MODE" in
   audit|feature|bugfix|bugreport|discover|deploy|custom|opensource|content) ;;
   *) die "Invalid mode: $MODE (expected 'audit', 'feature', 'bugfix', 'bugreport', 'discover', 'deploy', 'custom', 'opensource', or 'content')" ;;
 esac
+
+# --- Resolve --strategy (CLI flag wins over REPOLENS_STRATEGY env) ---
+# The wave-controller branch in lib/rounds.sh reads ${STRATEGY:-} to decide
+# whether round-1 dispatches a narrow set of triage-seeded GENERIC investigators
+# (waves) or the full lens list (fanout). Exporting STRATEGY here lets the
+# branch fire from parallel workers / subshells.
+if ! $STRATEGY_SET && [[ -n "${REPOLENS_STRATEGY:-}" ]]; then
+  case "$REPOLENS_STRATEGY" in
+    fanout|waves) STRATEGY="$REPOLENS_STRATEGY" ;;
+    *) die "Invalid REPOLENS_STRATEGY: '$REPOLENS_STRATEGY' (expected 'fanout' or 'waves')." ;;
+  esac
+  STRATEGY_SET=true
+fi
+[[ -n "$STRATEGY" ]] || STRATEGY="fanout"
+if [[ "$STRATEGY" == "waves" && "$MODE" != "bugreport" ]]; then
+  die "--strategy waves requires --mode bugreport (got --mode $MODE)."
+fi
+export STRATEGY
 
 parse_remote_target() {
   local target="$1"
@@ -2139,6 +2179,9 @@ if $DRY_RUN; then
   echo "Agent:        $AGENT"
   echo "Project:      $PROJECT_PATH"
   echo "Rounds:      $ROUNDS"
+  if [[ "$MODE" == "bugreport" ]]; then
+    echo "Strategy:     $STRATEGY"
+  fi
   echo "Lenses:       $TOTAL_LENSES"
   if [[ -n "$REMOTE_TARGET" ]]; then
     if [[ -n "$REMOTE_KEY" ]]; then
