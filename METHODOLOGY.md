@@ -8,7 +8,7 @@
 
 RepoLens implements **Lens-Based Auditing (LBA)**, a methodology for automated code analysis that decomposes the audit problem into 335 narrow-focus specialist agents ("lenses") across 32 domains. Rather than asking a single generalist agent to review an entire codebase for every possible concern, LBA assigns each concern to a dedicated expert lens — one that examines the code through a single, specific perspective.
 
-The tool currently supports 8 modes of operation (audit, feature, bugfix, discover, deploy, opensource, content, custom), multiple agent backends, parallel execution, and automated GitHub issue creation. This document describes the methodology behind the tool: what Lensing is, why it works, and how its components fit together.
+The tool currently supports 9 modes of operation (audit, feature, bugfix, bugreport, discover, deploy, opensource, content, custom), multiple agent backends, parallel execution, and automated GitHub issue creation. This document describes the methodology behind the tool: what Lensing is, why it works, and how its components fit together.
 
 ---
 
@@ -109,7 +109,7 @@ The system falls back to sequential execution automatically when global constrai
 
 ## Mode Isolation
 
-RepoLens supports 8 modes of operation. Mode isolation ensures that each mode sees only the domains and lenses relevant to its purpose, preventing cross-contamination between fundamentally different audit strategies.
+RepoLens supports 9 modes of operation. Mode isolation ensures that each mode sees only the domains and lenses relevant to its purpose, preventing cross-contamination between fundamentally different audit strategies.
 
 Mode isolation is implemented through three mechanisms:
 
@@ -117,7 +117,7 @@ Mode isolation is implemented through three mechanisms:
 2. **Base prompt selection** — Each mode has a dedicated base template that shapes agent behavior
 3. **Behavioral parameters** — DONE streak threshold, label prefix, issue severity schema, and confirmation gates vary per mode
 
-**The 8 modes:**
+**The 9 modes:**
 
 The `--depth default` and `--rounds default` columns reflect the CLI defaults as of this revision. `--depth` controls within-lens iteration; `--rounds` controls across-lens cross-pollination via the meta-orchestrator (see next section). Modes marked "1 (locked)" cap `--rounds` at 1 by design — single-pass operation is intrinsic to those modes.
 
@@ -126,6 +126,7 @@ The `--depth default` and `--rounds default` columns reflect the CLI defaults as
 | **audit** | Find real issues in existing code | 243 (code + toolgate + logs domains) | 3 | 1 |
 | **feature** | Identify missing capabilities | 243 | 3 | 1 |
 | **bugfix** | Find bugs backed by evidence | 243 | 3 | 1 |
+| **bugreport** | Symptom-driven investigation: triage + rounds-driven lens dispatch + verifier + synthesizer. Requires `--bug-report <file\|text>` | 243 | 1 | 3 |
 | **custom** | Change impact analysis | 243 | 1 | 1 |
 | **discover** | Brainstorm product ideas | 14 (discovery domain only) | 1 | 1 (locked) |
 | **deploy** | Read-only live-server inspection in local or remote SSH sub-modes, plus Android APK/source inspection | `deployment` domain (26 server lenses) or `android` domain (17 Android lenses, including `apk-dependencies`, `native-libraries`, `manifest-audit`, `network-security-config`, `exported-components`, `intent-filters`, `intent-fuzzing`, `drozer-attack-surface`, `logcat-leaks`, `ssl-pinning-mitm`, `frida-runtime`, `detection-bypass`, `keystore-extraction`, and `gradle-static-analysis`) | 1 | 1 (locked) |

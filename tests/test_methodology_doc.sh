@@ -211,8 +211,8 @@ actual_domain_count="$(jq '.domains | length' "$DOMAINS_FILE")"
 assert_contains "contains actual domain count ($actual_domain_count)" "$actual_domain_count" "$methodology_content"
 
 echo ""
-echo "Test 20: Mode count — mentions 8 modes"
-assert_matches "mentions 8 modes" "8[[:space:]]+mode" "$methodology_content"
+echo "Test 20: Mode count — mentions 9 modes"
+assert_matches "mentions 9 modes" "9[[:space:]]+mode" "$methodology_content"
 
 # =====================================================================
 # 7. DONE x3 streak content — section must explain the protocol
@@ -228,7 +228,7 @@ echo "Test 22: DONE streak section explains termination"
 assert_matches "explains termination" "(?i)(terminat|complet|exit|finish|stop)" "$methodology_content"
 
 # =====================================================================
-# 8. Mode isolation content — must reference the 8 modes
+# 8. Mode isolation content — must reference the 9 modes
 # =====================================================================
 
 echo ""
@@ -424,7 +424,7 @@ done
 
 echo ""
 echo "Test 44: Does not claim wrong number of modes"
-for wrong_modes in "6 mode" "7 mode" "9 mode" "10 mode"; do
+for wrong_modes in "6 mode" "7 mode" "8 mode" "10 mode"; do
   assert_not_contains "no stale claim of $wrong_modes" "$wrong_modes" "$methodology_content"
 done
 

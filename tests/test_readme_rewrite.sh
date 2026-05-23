@@ -116,14 +116,14 @@ actual_domains="$(jq '.domains | length' "$DOMAINS_FILE")"
 assert_contains "README has actual domain count ($actual_domains)" "$actual_domains" "$readme_content"
 
 # =====================================================================
-# 4. All 8 modes documented
+# 4. All 9 modes documented
 # =====================================================================
 
 echo ""
-echo "Test 6: All 8 modes are documented as modes"
+echo "Test 6: All 9 modes are documented as modes"
 # Each mode must appear backtick-quoted (e.g. `discover`) to count as documented as a mode,
 # not just mentioned as a random word (e.g. "discovery" or "deployment").
-for mode in audit feature bugfix discover deploy custom opensource content; do
+for mode in audit feature bugfix bugreport discover deploy custom opensource content; do
   TOTAL=$((TOTAL + 1))
   if grep -qE "\`$mode\`" <<< "$readme_content"; then
     PASS=$((PASS + 1))

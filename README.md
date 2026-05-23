@@ -199,13 +199,14 @@ For the full legal text, see [LICENSE](LICENSE) (Apache License, Version 2.0, Se
 
 ## Modes
 
-RepoLens supports 8 modes. Each mode controls which domains/lenses are visible and how the agent iterates.
+RepoLens supports 9 modes. Each mode controls which domains/lenses are visible and how the agent iterates.
 
 | Mode         | DONE Streak | Domains                                    | Description                                                                   |
 | ------------ | ----------- | ------------------------------------------ | ----------------------------------------------------------------------------- |
 | `audit`      | 3×          | 27 code/toolgate/logs domains (248 lenses) | **Default.** Standard code audit — finds issues in existing code              |
 | `feature`    | 3×          | 27 code/toolgate/logs domains (248 lenses) | Feature gap discovery — identifies missing capabilities                       |
 | `bugfix`     | 3×          | 27 code/toolgate/logs domains (248 lenses) | Bug hunting — finds real bugs and defects                                     |
+| `bugreport`  | 1×          | 27 code/toolgate/logs domains (248 lenses) | Symptom-driven investigation — triage + rounds-driven lens dispatch + verifier + synthesizer. Requires `--bug-report <file\|text>` |
 | `discover`   | 1×          | `discovery` domain (14 lenses)             | Product discovery — brainstorming for product strategy                        |
 | `deploy`     | 1×          | `deployment` domain (26 lenses) or `android` domain (17 lenses) | Server or Android audit — inspects a live server, APK target, or shallow Gradle Android source tree |
 | `custom`     | 1×          | 27 code/toolgate/logs domains (248 lenses) | Change impact analysis — identifies what needs adapting after a change        |
@@ -306,7 +307,7 @@ These flags scale RepoLens beyond the simple [Quickstart](#quickstart) invocatio
 ./repolens.sh --project ~/my-app --agent claude --focus injection --depth 8
 
 # Full bugreport pipeline — symptom-driven multi-round investigation
-./repolens.sh --project ~/my-app --agent claude --mode bugreport --rounds 3 --i-know-this-is-expensive
+./repolens.sh --project ~/my-app --agent claude --mode bugreport --bug-report ~/bug.txt
 ```
 
 ### Cost discipline
@@ -344,6 +345,7 @@ Usage: repolens.sh --project <path|url> --agent <agent> [OPTIONS]
 | Flag                   | Description                                                                                                                                                                                                                                                                                              |
 | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--mode <mode>`        | `audit` (default) \| `feature` \| `bugfix` \| `bugreport` \| `discover` \| `deploy` \| `custom` \| `opensource` \| `content`                                                                                                                                                                            |
+| `--bug-report <file\|text>` | Required for `--mode bugreport`. Path to a text file or inline symptom text (read verbatim). Env fallback: `REPOLENS_BUG_REPORT_PATH`. 100 KB max for file mode.                                                                                                                                  |
 | `--change <statement>` | Change impact statement (implies `--mode custom`)                                                                                                                                                                                                                                                        |
 | `--source <file>`      | Source material (PDF, text, markdown) for content creation or reference                                                                                                                                                                                                                                  |
 | `--logs <path>`        | Runtime log file or directory for the `logs` domain (path string only — agent reads it)                                                                                                                                                                                                                  |
