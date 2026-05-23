@@ -136,6 +136,18 @@ Options:
   --focus <lens-id>       Run a single lens (e.g., "injection", "dead-code")
   --lens <lens-id>        Alias for --focus
   --domain <domain-id>    Run all lenses in one domain (e.g., "security")
+  --relevant-domains <csv>
+                          Comma-separated allowlist of domain ids — the "missing
+                          middle" between --focus (1 lens) and full fan-out.
+                          Intersects with the mode-filtered lens list. Bypassed
+                          when --focus or --domain is set (those win).
+                          Example: --relevant-domains concurrency,database
+  --scope-by-keywords     Deterministic, LLM-free pruning: substring-match the
+                          bug-report text against each domain's "keywords" field
+                          in config/domains.json (case-insensitive). Domains
+                          without a "keywords" field are always kept (back-compat).
+                          Only effective in --mode bugreport. Env var fallback:
+                          REPOLENS_SCOPE_BY_KEYWORDS=1.
   --parallel              Run lenses in parallel (one agent process per lens)
   --max-parallel <n>      Max concurrent agents in parallel mode (default: 8)
   --resume <run-id>       Resume a previous interrupted run
@@ -409,6 +421,10 @@ AGENT=""
 MODE="audit"
 FOCUS=""
 DOMAIN_FILTER=""
+RELEVANT_DOMAINS_CSV=""
+RELEVANT_DOMAINS_SET=false
+SCOPE_BY_KEYWORDS=false
+SCOPE_BY_KEYWORDS_SET=false
 PARALLEL=false
 MAX_PARALLEL=8
 RESUME_RUN_ID=""
@@ -481,6 +497,17 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || die "Option --domain requires an argument."
       DOMAIN_FILTER="$2"
       shift 2
+      ;;
+    --relevant-domains)
+      [[ $# -ge 2 ]] || die "Option --relevant-domains requires a comma-separated argument."
+      RELEVANT_DOMAINS_CSV="$2"
+      RELEVANT_DOMAINS_SET=true
+      shift 2
+      ;;
+    --scope-by-keywords)
+      SCOPE_BY_KEYWORDS=true
+      SCOPE_BY_KEYWORDS_SET=true
+      shift
       ;;
     --parallel)
       PARALLEL=true
@@ -965,6 +992,21 @@ case "$CROSS_LINK_MODE" in
 esac
 
 export CROSS_LINK_MODE
+
+# --- Resolve --scope-by-keywords (#228) ---
+# Boolean opt-in: CLI flag wins, then REPOLENS_SCOPE_BY_KEYWORDS env var,
+# then default (off). Only meaningful in --mode bugreport (the only mode
+# with a bug-report text corpus to match against).
+if $SCOPE_BY_KEYWORDS_SET; then
+  : # explicit CLI flag wins
+elif [[ -n "${REPOLENS_SCOPE_BY_KEYWORDS:-}" ]]; then
+  case "${REPOLENS_SCOPE_BY_KEYWORDS}" in
+    1|true|TRUE|True|yes|YES|on|ON)  SCOPE_BY_KEYWORDS=true ;;
+    0|false|FALSE|False|no|NO|off|OFF|"") SCOPE_BY_KEYWORDS=false ;;
+    *) SCOPE_BY_KEYWORDS=false ;;
+  esac
+fi
+export SCOPE_BY_KEYWORDS
 
 CURRENT_ROUND_INDEX=""
 CURRENT_ROUND_TOTAL=""
@@ -1623,6 +1665,110 @@ resolve_lenses() {
   local _all_lenses
   _all_lenses="$(jq -r --arg mode "$MODE" --arg deploy_domain "$deploy_domain" \
     '.domains | sort_by(.order)[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain) elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content") end) | .id as $d | .lenses[] | $d + "/" + .' "$DOMAINS_FILE")"
+
+  # Issue #228: --relevant-domains <csv> deterministic allowlist. Operator-given
+  # CSV of domain ids; intersects with the mode-filtered lens list. Validated
+  # against the mode's domain whitelist so typos or wrong-mode ids fail loudly.
+  if [[ "$RELEVANT_DOMAINS_SET" == "true" ]]; then
+    local -A _rd_allowed=()
+    local _rd_allow_id
+    while IFS= read -r _rd_allow_id; do
+      [[ -z "$_rd_allow_id" ]] && continue
+      _rd_allowed["$_rd_allow_id"]=1
+    done < <(jq -r --arg mode "$MODE" --arg deploy_domain "$deploy_domain" \
+      '.domains[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain) elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content") end) | .id' "$DOMAINS_FILE")
+
+    local -A _rd_keep=()
+    local _rd_token _rd_count=0
+    local _rd_csv="$RELEVANT_DOMAINS_CSV"
+    local -a _rd_arr=()
+    IFS=',' read -ra _rd_arr <<< "$_rd_csv"
+    for _rd_token in "${_rd_arr[@]}"; do
+      # Trim whitespace
+      _rd_token="${_rd_token#"${_rd_token%%[![:space:]]*}"}"
+      _rd_token="${_rd_token%"${_rd_token##*[![:space:]]}"}"
+      [[ -z "$_rd_token" ]] && continue
+      if [[ -z "${_rd_allowed[$_rd_token]:-}" ]]; then
+        die "--relevant-domains: unknown or wrong-mode domain id '$_rd_token' (mode: $MODE)"
+      fi
+      _rd_keep["$_rd_token"]=1
+      _rd_count=$((_rd_count + 1))
+    done
+
+    if (( _rd_count == 0 )); then
+      die "--relevant-domains: CSV contains no valid domain ids: '$RELEVANT_DOMAINS_CSV'"
+    fi
+
+    local _rd_pruned="" _rd_entry _rd_entry_domain
+    while IFS= read -r _rd_entry; do
+      [[ -z "$_rd_entry" ]] && continue
+      _rd_entry_domain="${_rd_entry%%/*}"
+      if [[ -n "${_rd_keep[$_rd_entry_domain]:-}" ]]; then
+        _rd_pruned+="$_rd_entry"$'\n'
+      fi
+    done <<< "$_all_lenses"
+    _rd_pruned="${_rd_pruned%$'\n'}"
+    _all_lenses="$_rd_pruned"
+  fi
+
+  # Issue #228: --scope-by-keywords deterministic, LLM-free pruning. Substring
+  # match the bug-report text (case-insensitive) against each domain's
+  # "keywords" field. Missing/empty keywords → keep (back-compat). Zero match
+  # across the whole set → fall through with no pruning (avoid empty lens list).
+  if [[ "$SCOPE_BY_KEYWORDS" == "true" && "$MODE" == "bugreport" && -n "${BUG_REPORT:-}" ]]; then
+    local _kw_bug_lower
+    _kw_bug_lower="$(printf '%s' "$BUG_REPORT" | tr '[:upper:]' '[:lower:]')"
+
+    local -A _kw_keep=()
+    local -a _kw_parts=()
+    local _kw_dom _kw_match _kw_i _kw_w
+    while IFS=$'\t' read -r -a _kw_parts; do
+      _kw_dom="${_kw_parts[0]:-}"
+      [[ -z "$_kw_dom" ]] && continue
+      if (( ${#_kw_parts[@]} <= 1 )); then
+        # No keywords field (or empty list) — back-compat: always keep.
+        _kw_keep["$_kw_dom"]=1
+        continue
+      fi
+      _kw_match=0
+      for (( _kw_i = 1; _kw_i < ${#_kw_parts[@]}; _kw_i++ )); do
+        _kw_w="${_kw_parts[$_kw_i]}"
+        [[ -z "$_kw_w" ]] && continue
+        if [[ "$_kw_bug_lower" == *"$_kw_w"* ]]; then
+          _kw_match=1
+          break
+        fi
+      done
+      if (( _kw_match == 1 )); then
+        _kw_keep["$_kw_dom"]=1
+      fi
+    done < <(jq -r --arg mode "$MODE" --arg deploy_domain "$deploy_domain" '
+      .domains[]
+      | (if $mode == "discover" then select(.mode == "discover")
+         elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain)
+         elif $mode == "opensource" then select(.mode == "opensource")
+         elif $mode == "content" then select(.mode == "content")
+         else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content")
+         end)
+      | [.id] + ((.keywords // []) | map(ascii_downcase))
+      | @tsv
+    ' "$DOMAINS_FILE")
+
+    if (( ${#_kw_keep[@]} > 0 )); then
+      local _kw_pruned="" _kw_entry _kw_entry_domain
+      while IFS= read -r _kw_entry; do
+        [[ -z "$_kw_entry" ]] && continue
+        _kw_entry_domain="${_kw_entry%%/*}"
+        if [[ -n "${_kw_keep[$_kw_entry_domain]:-}" ]]; then
+          _kw_pruned+="$_kw_entry"$'\n'
+        fi
+      done <<< "$_all_lenses"
+      _kw_pruned="${_kw_pruned%$'\n'}"
+      if [[ -n "$_kw_pruned" ]]; then
+        _all_lenses="$_kw_pruned"
+      fi
+    fi
+  fi
 
   # Bugreport mode: when the triage agent has produced a relevant-domains
   # whitelist, intersect by domain prefix. Missing-or-empty file → full

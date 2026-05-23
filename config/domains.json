@@ -16,6 +16,18 @@
         "input-sanitization",
         "data-exposure",
         "rate-abuse"
+      ],
+      "keywords": [
+        "auth",
+        "login",
+        "session",
+        "token",
+        "jwt",
+        "csrf",
+        "xss",
+        "injection",
+        "credential",
+        "leak"
       ]
     },
     {
@@ -82,6 +94,17 @@
         "error-boundaries",
         "graceful-degradation",
         "timeout-retry"
+      ],
+      "keywords": [
+        "exception",
+        "error",
+        "catch",
+        "throw",
+        "swallow",
+        "stacktrace",
+        "retry",
+        "crash",
+        "panic"
       ]
     },
     {
@@ -98,6 +121,18 @@
         "pagination",
         "connection-mgmt",
         "startup-perf"
+      ],
+      "keywords": [
+        "slow",
+        "lag",
+        "freeze",
+        "memory",
+        "leak",
+        "cpu",
+        "frame",
+        "jank",
+        "cold-start",
+        "blocking"
       ]
     },
     {
@@ -124,6 +159,18 @@
         "transaction-safety",
         "data-integrity",
         "query-safety"
+      ],
+      "keywords": [
+        "sql",
+        "query",
+        "schema",
+        "migration",
+        "transaction",
+        "lock",
+        "sqlite",
+        "sqflite",
+        "rollback",
+        "deadlock"
       ]
     },
     {
@@ -344,6 +391,17 @@
         "async-patterns",
         "resource-contention",
         "transaction-concurrency"
+      ],
+      "keywords": [
+        "race",
+        "deadlock",
+        "lock",
+        "mutex",
+        "isolate",
+        "thread",
+        "async",
+        "await",
+        "lifecycle"
       ]
     },
     {
@@ -550,6 +608,19 @@
         "agent-isolation",
         "cost-control",
         "credential-exposure"
+      ],
+      "keywords": [
+        "llm",
+        "prompt",
+        "jailbreak",
+        "ai-safety",
+        "embedding",
+        "rag",
+        "hallucination",
+        "toxicity",
+        "model-output",
+        "openai",
+        "anthropic"
       ]
     },
     {
