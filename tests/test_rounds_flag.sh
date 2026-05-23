@@ -272,10 +272,10 @@ echo "Test 1: lib/core.sh exposes the per-mode rounds cap table"
 if declare -p ROUNDS_CAP_BY_MODE >/dev/null 2>&1; then
   pass_with "lib/core.sh exposes ROUNDS_CAP_BY_MODE"
   for case in \
-    "audit:10" \
-    "feature:10" \
-    "bugfix:10" \
-    "custom:10" \
+    "audit:1" \
+    "feature:1" \
+    "bugfix:1" \
+    "custom:1" \
     "bugreport:10" \
     "deploy:1" \
     "opensource:1" \
@@ -309,7 +309,7 @@ assert_contains "custom default dry-run shows one round" "Rounds:      1" "$(las
 
 echo ""
 echo "Test 4: --rounds controls the dry-run round count"
-run_repolens_case "flag-rounds" "__unset__" --rounds 3
+run_repolens_case "flag-rounds" "__unset__" --mode bugreport --bug-report "Test bug report" --rounds 3
 assert_eq "--rounds 3 dry-run exits successfully" "0" "$LAST_RC"
 assert_contains "--rounds 3 is displayed" "Rounds:      3" "$(last_output)"
 run_dir="$(last_run_dir)"
@@ -349,48 +349,46 @@ assert_dir_missing "explicit output does not reroute lens directory to round log
 
 echo ""
 echo "Test 5: REPOLENS_ROUNDS is used when --rounds is absent"
-run_repolens_case "env-rounds" "4"
+run_repolens_case "env-rounds" "4" --mode bugreport --bug-report "Test bug report"
 assert_eq "REPOLENS_ROUNDS dry-run exits successfully" "0" "$LAST_RC"
 assert_contains "REPOLENS_ROUNDS is displayed" "Rounds:      4" "$(last_output)"
 
 echo ""
 echo "Test 6: --rounds wins over REPOLENS_ROUNDS"
-run_repolens_case "flag-wins-env" "4" --rounds 2
+run_repolens_case "flag-wins-env" "4" --mode bugreport --bug-report "Test bug report" --rounds 2
 assert_eq "flag plus env dry-run exits successfully" "0" "$LAST_RC"
 assert_contains "flag value is displayed" "Rounds:      2" "$(last_output)"
 assert_not_contains "env value is not displayed as rounds" "Rounds:      4" "$(last_output)"
 
 echo ""
 echo "Test 7: invalid REPOLENS_ROUNDS is ignored when --rounds is provided"
-run_repolens_case "flag-wins-invalid-env" "abc" --rounds 2
+run_repolens_case "flag-wins-invalid-env" "abc" --mode bugreport --bug-report "Test bug report" --rounds 2
 assert_eq "valid flag with invalid env still exits successfully" "0" "$LAST_RC"
 assert_contains "valid flag value is displayed despite invalid env" "Rounds:      2" "$(last_output)"
 
 echo ""
-echo "Test 8: multi-round modes accept their cap"
-for mode in audit feature bugfix custom; do
-  args=(--mode "$mode" --rounds 10)
-  if [[ "$mode" == "custom" ]]; then
-    args+=(--change "Test change")
-  fi
-  run_repolens_case "cap-$mode" "__unset__" "${args[@]}"
-  assert_eq "$mode accepts --rounds 10" "0" "$LAST_RC"
-  assert_contains "$mode displays --rounds 10" "Rounds:      10" "$(last_output)"
-done
+echo "Test 8: bugreport accepts its multi-round cap"
+run_repolens_case "cap-bugreport" "__unset__" --mode bugreport --bug-report "Test bug report" --rounds 10
+assert_eq "bugreport accepts --rounds 10" "0" "$LAST_RC"
+assert_contains "bugreport displays --rounds 10" "Rounds:      10" "$(last_output)"
 
 echo ""
 echo "Test 9: one-round modes reject values over their cap"
-for mode in deploy discover opensource content; do
+for mode in audit feature bugfix deploy discover opensource content; do
   run_repolens_case "cap-over-$mode" "__unset__" --mode "$mode" --rounds 2
   assert_eq "$mode rejects --rounds 2" "1" "$LAST_RC"
   assert_contains "$mode cap error names mode and cap" "--rounds 2 exceeds cap for mode '$mode' (max: 1)" "$(last_output)"
 done
 
+run_repolens_case "cap-over-custom" "__unset__" --mode custom --change "Test change" --rounds 2
+assert_eq "custom rejects --rounds 2" "1" "$LAST_RC"
+assert_contains "custom cap error names mode and cap" "--rounds 2 exceeds cap for mode 'custom' (max: 1)" "$(last_output)"
+
 echo ""
-echo "Test 10: audit mode rejects values over its cap"
-run_repolens_case "cap-over-audit" "__unset__" --rounds 11
-assert_eq "audit rejects --rounds 11" "1" "$LAST_RC"
-assert_contains "audit cap error names mode and cap" "--rounds 11 exceeds cap for mode 'audit' (max: 10)" "$(last_output)"
+echo "Test 10: bugreport rejects values over its cap"
+run_repolens_case "cap-over-bugreport" "__unset__" --mode bugreport --bug-report "Test bug report" --rounds 11
+assert_eq "bugreport rejects --rounds 11" "1" "$LAST_RC"
+assert_contains "bugreport cap error names mode and cap" "--rounds 11 exceeds cap for mode 'bugreport' (max: 10)" "$(last_output)"
 
 echo ""
 echo "Test 11: --rounds rejects invalid values"
@@ -414,15 +412,19 @@ done
 
 echo ""
 echo "Test 13: REPOLENS_ROUNDS is subject to per-mode caps"
-run_repolens_case "env-cap-over-audit" "11"
-assert_eq "audit rejects REPOLENS_ROUNDS=11" "1" "$LAST_RC"
-assert_contains "audit env cap error names mode and cap" "REPOLENS_ROUNDS 11 exceeds cap for mode 'audit' (max: 10)" "$(last_output)"
+run_repolens_case "env-cap-over-bugreport" "11" --mode bugreport --bug-report "Test bug report"
+assert_eq "bugreport rejects REPOLENS_ROUNDS=11" "1" "$LAST_RC"
+assert_contains "bugreport env cap error names mode and cap" "REPOLENS_ROUNDS 11 exceeds cap for mode 'bugreport' (max: 10)" "$(last_output)"
 
-for mode in deploy discover opensource content; do
+for mode in audit feature bugfix deploy discover opensource content; do
   run_repolens_case "env-cap-over-$mode" "2" --mode "$mode"
   assert_eq "$mode rejects REPOLENS_ROUNDS=2" "1" "$LAST_RC"
   assert_contains "$mode env cap error names mode and cap" "REPOLENS_ROUNDS 2 exceeds cap for mode '$mode' (max: 1)" "$(last_output)"
 done
+
+run_repolens_case "env-cap-over-custom" "2" --mode custom --change "Test change"
+assert_eq "custom rejects REPOLENS_ROUNDS=2" "1" "$LAST_RC"
+assert_contains "custom env cap error names mode and cap" "REPOLENS_ROUNDS 2 exceeds cap for mode 'custom' (max: 1)" "$(last_output)"
 
 echo ""
 echo "Test 14: --rounds requires an argument"
@@ -432,7 +434,7 @@ assert_contains "bare --rounds names missing positive integer argument" "Option 
 
 echo ""
 echo "Test 15: custom mode requires --change even in dry-run"
-run_repolens_case "custom-dry-run-without-change" "__unset__" --mode custom --rounds 10
+run_repolens_case "custom-dry-run-without-change" "__unset__" --mode custom --rounds 1
 assert_eq "custom dry-run without --change exits non-zero" "1" "$LAST_RC"
 assert_contains "custom dry-run without --change keeps the change guard" "Mode 'custom' requires --change \"your change statement\"" "$(last_output)"
 
@@ -448,7 +450,7 @@ env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED REPOLENS_MAX_ROUNDS=99 PATH="$FAK
     --yes \
     --mode custom \
     --i-know-this-is-expensive \
-    --rounds 10 >"$LAST_OUTPUT_FILE" 2>&1
+    --rounds 1 >"$LAST_OUTPUT_FILE" 2>&1
 LAST_RC=$?
 register_created_run_id
 assert_eq "custom non-dry-run without --change exits non-zero" "1" "$LAST_RC"
@@ -458,7 +460,7 @@ echo ""
 echo "Test 16: usage documents --rounds and REPOLENS_ROUNDS"
 usage_output="$(env -u REPOLENS_ROUNDS bash "$SCRIPT_DIR/repolens.sh" --help 2>&1)"
 assert_contains "usage includes --rounds" "--rounds <n>" "$usage_output"
-assert_contains "usage notes one-round capped modes" "deploy/opensource/content/discover" "$usage_output"
+assert_contains "usage notes only bugreport supports multi-round" "only --mode bugreport" "$usage_output"
 assert_contains "usage includes REPOLENS_ROUNDS" "REPOLENS_ROUNDS" "$usage_output"
 
 echo ""

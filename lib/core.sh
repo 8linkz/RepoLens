@@ -132,10 +132,10 @@ declare -A MODE_DEFAULT_ROUNDS=(
 )
 
 declare -A ROUNDS_CAP_BY_MODE=(
-  [audit]=10
-  [feature]=10
-  [bugfix]=10
-  [custom]=10
+  [audit]=1
+  [feature]=1
+  [bugfix]=1
+  [custom]=1
   [bugreport]=10
   [deploy]=1
   [opensource]=1

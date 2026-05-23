@@ -142,6 +142,12 @@ extract_backtick_after() {
   printf '%s\n' "$prompt" | sed -n "s/.*${label} \`\([^\`]*\)\`.*/\1/p" | sed -n '1p'
 }
 
+if [[ "$prompt" == *"RepoLens Triage Agent"* ]]; then
+  log_role "triage"
+  printf 'DONE\n'
+  exit 0
+fi
+
 if [[ "$prompt" == *"META-ORCHESTRATOR"* ]]; then
   log_role "meta"
   printf 'NO_FRESH_ANGLES\n'
@@ -214,6 +220,9 @@ printf 'DONE\nCreated issue 217 round-one finding.\nDONE\n'
 EOF
 chmod +x "$FAKE_BIN/codex"
 
+BUG_FILE="$TMPDIR/bug-report.md"
+printf 'NO_FRESH_ANGLES regression coverage — placeholder bug report.\n' > "$BUG_FILE"
+
 run_output="$TMPDIR/repolens-output.txt"
 PATH="$FAKE_BIN:$PATH" \
   REPOLENS_AGENT_TIMEOUT=10 \
@@ -224,7 +233,8 @@ PATH="$FAKE_BIN:$PATH" \
     --project "$PROJECT_DIR" \
     --agent codex \
     --local \
-    --mode audit \
+    --mode bugreport \
+    --bug-report "$BUG_FILE" \
     --focus injection \
     --rounds 3 \
     --depth 1 \

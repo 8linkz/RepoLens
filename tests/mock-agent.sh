@@ -282,6 +282,9 @@ main() {
     emit_filing_sentinel "$prompt"
   elif [[ "$prompt" == *"RepoLens Synthesizer"* ]]; then
     emit_manifest "$prompt"
+  elif [[ "$prompt" == *"RepoLens Verifier"* ]]; then
+    log_role "verifier"
+    printf '[]\n'
   elif [[ "$prompt" == *"META-ORCHESTRATOR"* ]]; then
     emit_meta_dispatch
   elif [[ "$prompt" == *"RepoLens Triage Agent"* ]]; then

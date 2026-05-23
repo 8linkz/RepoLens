@@ -332,6 +332,9 @@ mkdir -p "$mismatch_project"
 git -C "$mismatch_project" init -q
 printf '# resume mismatch project\n' > "$mismatch_project/README.md"
 
+BUG_FILE="$TMPDIR/bug-report.md"
+printf 'Resume gate fixture bug report — placeholder text.\n' > "$BUG_FILE"
+
 # Fabricate a prior run's round-1/metadata.json with rounds_total=3 so that the
 # resume-time gate can read it back.
 FAKE_RUN_ID="20260101T000000Z-resumetest"
@@ -346,6 +349,8 @@ env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED REPOLENS_MAX_ROUNDS=99 PATH="$FAK
   bash "$SCRIPT_DIR/repolens.sh" \
     --project "$mismatch_project" \
     --agent codex \
+    --mode bugreport \
+    --bug-report "$BUG_FILE" \
     --local \
     --output "$TMPDIR/issues-mismatch" \
     --yes \
@@ -368,6 +373,8 @@ env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED PATH="$FAKE_BIN:$PATH" \
   bash "$SCRIPT_DIR/repolens.sh" \
     --project "$mismatch_project" \
     --agent codex \
+    --mode bugreport \
+    --bug-report "$BUG_FILE" \
     --local \
     --output "$TMPDIR/issues-matching" \
     --yes \
@@ -405,6 +412,8 @@ env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED REPOLENS_MAX_ROUNDS=99 PATH="$FAK
   bash "$SCRIPT_DIR/repolens.sh" \
     --project "$legacy_project" \
     --agent codex \
+    --mode bugreport \
+    --bug-report "$BUG_FILE" \
     --local \
     --output "$TMPDIR/issues-legacy" \
     --yes \

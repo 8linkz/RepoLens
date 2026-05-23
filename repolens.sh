@@ -156,8 +156,8 @@ Options:
   --min-severity <level>  Only file findings at or above level: critical|high|medium|low
   --depth <n>             DONE streak depth per lens. Defaults: 3 for audit/feature/bugfix,
                            1 otherwise. Must be between 1 and 19.
-  --rounds <n>            Cross-lens rounds (default: 1; capped per mode —
-                           deploy/opensource/content/discover locked to 1)
+  --rounds <n>            Cross-lens rounds (default: 1; only --mode bugreport
+                           supports multi-round — all other modes locked to 1)
   --strategy <name>       Bugreport round-1 strategy: fanout (default — all
                            lenses run as the round-1 dispatch) | waves (N
                            triage-seeded GENERIC investigators, width =
@@ -2994,7 +2994,7 @@ fi
 # Multi-round runs finish by consolidating round findings into a schema-checked
 # manifest under logs/<run-id>/final/manifest.json. Single-round runs keep the
 # legacy direct-filing/local-output behavior.
-if [[ "$RUN_ROUNDS_RC" -eq 0 && "${ROUNDS:-1}" -gt 1 ]]; then
+if [[ "$RUN_ROUNDS_RC" -eq 0 && "$MODE" == "bugreport" && "${ROUNDS:-1}" -gt 1 ]]; then
   log_info "Synthesizer: consolidating multi-round findings"
   if run_synthesizer "$RUN_ID"; then
     log_info "Synthesizer: manifest.json promoted"

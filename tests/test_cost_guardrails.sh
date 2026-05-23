@@ -30,6 +30,8 @@ TMP_PARENT="$SCRIPT_DIR/logs/test-cost-guardrails"
 mkdir -p "$TMP_PARENT"
 TMPDIR="$(mktemp -d "$TMP_PARENT/run.XXXXXX")"
 CREATED_RUN_IDS=()
+BUG_FILE="$TMPDIR/bug-report.md"
+printf 'Cost guardrail fixture bug report — placeholder text.\n' > "$BUG_FILE"
 
 cleanup() {
   local run_id
@@ -154,6 +156,8 @@ run_repolens() {
     bash "$SCRIPT_DIR/repolens.sh" \
       --project "$project" \
       --agent codex \
+      --mode bugreport \
+      --bug-report "$BUG_FILE" \
       --local \
       --output "$TMPDIR/issues-$name" \
       "$@" </dev/null >"$LAST_OUTPUT_FILE" 2>&1
@@ -185,6 +189,8 @@ run_repolens_with_env() {
     bash "$SCRIPT_DIR/repolens.sh" \
       --project "$project" \
       --agent codex \
+      --mode bugreport \
+      --bug-report "$BUG_FILE" \
       --local \
       --output "$TMPDIR/issues-$name" \
       "$@" </dev/null >"$LAST_OUTPUT_FILE" 2>&1

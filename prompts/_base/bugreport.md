@@ -127,6 +127,8 @@ Merge with any persistence-lens finding on the same key. Confidence is medium be
 
 {{LENS_BODY}}
 
+{{LOCAL_MODE_SECTION}}
+
 ## Termination
 
 - When you have emitted all findings for this round (or have nothing new to add), output **DONE** as the very first word of your response AND **DONE** as the very last word.

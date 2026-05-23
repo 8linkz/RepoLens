@@ -148,11 +148,17 @@ echo "=== rounds --rounds 3 handoff integration (issue #180) ==="
 PROJECT_DIR="$TMPDIR/project"
 FAKE_BIN="$TMPDIR/bin"
 MOCK_LOG="$TMPDIR/mock-agent.log"
+BUG_FILE="$TMPDIR/bug-report.md"
 mkdir -p "$PROJECT_DIR" "$FAKE_BIN"
 git -C "$PROJECT_DIR" init -q
 printf '# RepoLens issue 180 fixture\n' > "$PROJECT_DIR/README.md"
 git -C "$PROJECT_DIR" add README.md
 git -C "$PROJECT_DIR" -c user.name='RepoLens Test' -c user.email='repolens@example.invalid' commit -q -m 'fixture'
+
+cat > "$BUG_FILE" <<'EOF'
+The README example surfaces an injection-shaped concern when the project intro
+is read at README.md:1. Investigate end-to-end.
+EOF
 
 cat > "$FAKE_BIN/codex" <<EOF
 #!/usr/bin/env bash
@@ -169,7 +175,8 @@ PATH="$FAKE_BIN:$PATH" \
     --project "$PROJECT_DIR" \
     --agent codex \
     --local \
-    --mode audit \
+    --mode bugreport \
+    --bug-report "$BUG_FILE" \
     --focus injection \
     --rounds 3 \
     --depth 1 \
