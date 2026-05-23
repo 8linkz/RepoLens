@@ -201,30 +201,41 @@ MODE="audit"
 unset TARGET_TYPE
 
 echo ""
-echo "Test 1d: dispatch validation respects DOMAIN_FILTER"
+echo "Test 1d: dispatch validation does NOT leak DOMAIN_FILTER (issue #232)"
+# --domain is a round-1 selection filter; round-2+ meta-orchestrator
+# dispatch must reach across the full lens registry regardless of it.
 cat > "$TMPDIR/domain-meta-output.txt" <<'EOF'
 ## Round 2 dispatch plan
 LENS: injection
 LENS: dead-code
+LENS: does-not-exist
 EOF
 DOMAIN_FILTER="security"
+LOG_LINES=()
 _rounds_meta_parse_output "$TMPDIR/domain-meta-output.txt" "$TMPDIR/domain-dispatch.md" "$TMPDIR/domain-hypotheses.md" "$LENSES_DIR"
 rc=$?
 domain_dispatch="$(cat "$TMPDIR/domain-dispatch.md")"
 assert_eq "domain-filter parse output exits successfully" "0" "$rc"
-assert_contains "selected domain lens is accepted" "LENS: injection" "$domain_dispatch"
-assert_not_contains "other domain lens is rejected" "LENS: dead-code" "$domain_dispatch"
+assert_contains "selected domain lens is accepted under DOMAIN_FILTER" "LENS: injection" "$domain_dispatch"
+assert_contains "cross-domain meta dispatch is accepted under DOMAIN_FILTER" "LENS: dead-code" "$domain_dispatch"
+assert_not_contains "unregistered lens id is still rejected under DOMAIN_FILTER" "does-not-exist" "$domain_dispatch"
+assert_contains "unregistered lens warns with new wording" "Dropping unregistered meta-orchestrator lens id: does-not-exist" "${LOG_LINES[*]}"
 unset DOMAIN_FILTER
 
 echo ""
-echo "Test 1e: dispatch validation respects FOCUS"
+echo "Test 1e: dispatch validation does NOT leak FOCUS (issue #232)"
+# --focus is a round-1 selection filter; the meta-orchestrator must be
+# free to surface adjacent lenses outside the focus selection in round 2+.
 FOCUS="dead-code"
+LOG_LINES=()
 _rounds_meta_parse_output "$TMPDIR/domain-meta-output.txt" "$TMPDIR/focus-dispatch.md" "$TMPDIR/focus-hypotheses.md" "$LENSES_DIR"
 rc=$?
 focus_dispatch="$(cat "$TMPDIR/focus-dispatch.md")"
 assert_eq "focus parse output exits successfully" "0" "$rc"
-assert_not_contains "non-focused lens is rejected" "LENS: injection" "$focus_dispatch"
-assert_contains "focused lens is accepted" "LENS: dead-code" "$focus_dispatch"
+assert_contains "off-focus lens is accepted under FOCUS" "LENS: injection" "$focus_dispatch"
+assert_contains "focused lens is accepted under FOCUS" "LENS: dead-code" "$focus_dispatch"
+assert_not_contains "unregistered lens id is still rejected under FOCUS" "does-not-exist" "$focus_dispatch"
+assert_contains "unregistered lens warns with new wording (FOCUS)" "Dropping unregistered meta-orchestrator lens id: does-not-exist" "${LOG_LINES[*]}"
 unset FOCUS
 
 echo ""

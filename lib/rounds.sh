@@ -783,11 +783,39 @@ _rounds_meta_active_lens_entries() {
   )
 }
 
+# Mode-aware lens registry without --focus/--domain user filters.
+# Used to validate meta-orchestrator round 2+ dispatch ids: those are
+# adjacency picks across the full registry, not the user's round-1 selection.
+_rounds_meta_all_lens_entries() {
+  local lenses_dir="${1:-}" domains_file="${2:-}" mode deploy_domain entry
+
+  [[ -n "$lenses_dir" ]] || lenses_dir="$(_rounds_meta_lenses_dir)"
+  [[ -n "$domains_file" ]] || domains_file="$(_rounds_meta_domains_file)"
+  [[ -d "$lenses_dir" && -f "$domains_file" ]] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+
+  mode="${MODE:-audit}"
+  deploy_domain="deployment"
+  if [[ "$mode" == "deploy" && "${TARGET_TYPE:-server}" == "android" ]]; then
+    deploy_domain="android"
+  fi
+
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    if [[ -f "$lenses_dir/$entry.md" ]]; then
+      printf '%s\n' "$entry"
+    fi
+  done < <(
+    jq -r --arg mode "$mode" --arg deploy_domain "$deploy_domain" \
+      '.domains | sort_by(.order)[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain) elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content") end) | .id as $d | .lenses[] | (if type == "string" then {id: ., skip_modes: []} else . end) | select(((.skip_modes // []) | index($mode)) | not) | $d + "/" + .id' "$domains_file"
+  )
+}
+
 _rounds_meta_validate_lens_id() {
   local lens_id="$1" lenses_dir="${2:-}"
 
   [[ "$lens_id" =~ ^[A-Za-z0-9_-]+$ ]] || return 1
-  _rounds_meta_lens_entry_for_id "$lens_id" "$lenses_dir" >/dev/null
+  _rounds_meta_lens_entry_for_id_unfiltered "$lens_id" "$lenses_dir" >/dev/null
 }
 
 _rounds_meta_lens_entry_for_id() {
@@ -800,9 +828,13 @@ _rounds_meta_lens_entry_for_id() {
     [[ "${entry#*/}" == "$lens_id" ]] || continue
     printf '%s\n' "$entry"
     return 0
-  done < <(_rounds_meta_active_lens_entries "$lenses_dir" || true)
+  done < <(_rounds_meta_all_lens_entries "$lenses_dir" || true)
 
   return 1
+}
+
+_rounds_meta_lens_entry_for_id_unfiltered() {
+  _rounds_meta_lens_entry_for_id "$@"
 }
 
 _rounds_meta_dispatch_lens_entries() {
@@ -1194,7 +1226,7 @@ _rounds_meta_parse_output() {
           lens_dispatch_lines+=("$lens_dispatch_line")
         fi
       else
-        _rounds_meta_warn "Dropping hallucinated meta-orchestrator lens id: $lens_id"
+        _rounds_meta_warn "Dropping unregistered meta-orchestrator lens id: $lens_id"
       fi
       continue
     fi
