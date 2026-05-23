@@ -169,7 +169,7 @@ assert_contains "fj issue create rendered" "fj -H codeberg.org issue create --re
 assert_contains "fj label application rendered" 'fj -H codeberg.org issue edit "owner/repo#$issue_number" labels --add audit:code-quality/naming' "$fj_prompt"
 assert_contains "fj URL issue number extraction rendered" 'issue_number="${issue_output##*issues/}"' "$fj_prompt"
 assert_contains "fj hash issue number extraction rendered" 'issue_number="${issue_number:-${issue_output##*#}}"' "$fj_prompt"
-assert_contains "fj label create rendered" "fj -H codeberg.org repo labels owner/repo create audit:code-quality/naming ededed" "$fj_prompt"
+assert_contains "fj label create rendered with #RRGGBB" "fj -H codeberg.org repo labels owner/repo create audit:code-quality/naming #ededed" "$fj_prompt"
 assert_contains "fj issue list rendered" "fj -H codeberg.org --style minimal issue search --repo owner/repo --state open" "$fj_prompt"
 assert_not_contains "fj prompt has no gh issue command" "gh issue" "$fj_prompt"
 assert_not_contains "fj prompt has no gh label command" "gh label" "$fj_prompt"
@@ -193,7 +193,7 @@ for provider in gh tea fj; do
       assert_not_contains "discover tea contains no gh commands" "gh label" "$prompt"
       ;;
     fj)
-      assert_contains "discover fj enhancement label command" "fj -H codeberg.org repo labels owner/repo create enhancement a2eeef" "$prompt"
+      assert_contains "discover fj enhancement label command with #RRGGBB" "fj -H codeberg.org repo labels owner/repo create enhancement #a2eeef" "$prompt"
       assert_not_contains "discover fj contains no gh commands" "gh label" "$prompt"
       ;;
   esac

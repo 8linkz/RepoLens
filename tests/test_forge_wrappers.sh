@@ -352,8 +352,8 @@ rc=$?
 logged="$(cat "$FJ_LOG")"
 assert_rc_zero "forge_label_create fj happy path rc=0" "$rc"
 assert_eq "forge_label_create fj prints nothing on success" "" "$out"
-assert_eq "fj stub received the expected label command" \
-  "-H codeberg.org repo labels owner/repo create my-label abcdef" "$logged"
+assert_eq "fj stub received the expected label command (with #RRGGBB)" \
+  "-H codeberg.org repo labels owner/repo create my-label #abcdef" "$logged"
 
 # Test 10: argument guard — missing any of the three required args
 # must die, not silently pass garbage to gh.

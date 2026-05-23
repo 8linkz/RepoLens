@@ -227,8 +227,8 @@ logged="$(cat "$fj_log")"
 argv_content="$(cat "$argv_dump" 2>/dev/null || true)"
 assert_rc_zero "forge_label_create fj succeeds when fj repo labels succeeds" "$rc"
 assert_eq "forge_label_create fj is silent on success" "" "$out"
-assert_eq "fj label argv matches the supported CLI surface" \
-  "-H codeberg.org repo labels owner/repo create audit:demo abcdef" "$logged"
+assert_eq "fj label argv matches the supported CLI surface (with #RRGGBB)" \
+  "-H codeberg.org repo labels owner/repo create audit:demo #abcdef" "$logged"
 assert_eq "fj label argv has one owner/repo argument" "8" "$(sed -n '1p' "$argv_dump" 2>/dev/null || true)"
 assert_contains "fj label argv includes owner/repo as one argument" "<owner/repo>" "$argv_content"
 
@@ -245,8 +245,8 @@ out="$(run_wrapper forge_label_create audit:demo abcdef owner/repo 2>&1)"
 rc=$?
 assert_rc_zero "forge_label_create fj swallows non-zero fj exit" "$rc"
 assert_eq "forge_label_create fj suppresses failed label stderr" "" "$out"
-assert_eq "best-effort label failure still calls fj repo labels create" \
-  "-H codeberg.org repo labels owner/repo create audit:demo abcdef" "$(cat "$fj_log")"
+assert_eq "best-effort label failure still calls fj repo labels create (with #RRGGBB)" \
+  "-H codeberg.org repo labels owner/repo create audit:demo #abcdef" "$(cat "$fj_log")"
 
 echo ""
 echo "Test 6: fj label create requires FORGE_HOST before invoking fj"

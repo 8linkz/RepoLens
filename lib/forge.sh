@@ -318,7 +318,9 @@ forge_prompt_label_create() {
       ;;
     fj)
       local host="${FORGE_HOST:-<forge-host>}"
-      printf 'fj -H %s repo labels %s create %s %s\n' "$host" "$repo" "$label" "$color"
+      local fj_color="$color"
+      [[ "$fj_color" == \#* ]] || fj_color="#$fj_color"
+      printf 'fj -H %s repo labels %s create %s %s\n' "$host" "$repo" "$label" "$fj_color"
       ;;
     *)
       printf 'Use the active forge CLI to create label %s with color %s on %s\n' \
@@ -452,7 +454,9 @@ forge_label_create() {
     fj)
       [[ -n "${FORGE_HOST:-}" ]] \
         || die "forge_label_create: fj backend requires FORGE_HOST"
-      fj -H "$FORGE_HOST" repo labels "$repo" create "$label" "$color" 2>/dev/null || true
+      local fj_color="$color"
+      [[ "$fj_color" == \#* ]] || fj_color="#$fj_color"
+      fj -H "$FORGE_HOST" repo labels "$repo" create "$label" "$fj_color" 2>/dev/null || true
       ;;
     *)
       _forge_warn "forge_label_create: unknown provider '${FORGE_PROVIDER:-}' (expected gh|tea|fj)"
