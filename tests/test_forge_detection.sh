@@ -207,6 +207,133 @@ assert_detect "bare host, no path"        "https://github.com"                  
 assert_detect "git:// scheme"             "git://github.com/owner/repo.git"          "gh"
 
 echo ""
+# --- Issue #245: substring overreach — *gitea* glob matches "gitea" anywhere
+# in the host. The tightened pattern requires "gitea" to be a full DNS label
+# (delimited by dots or anchored at the start of the host), so a hyphenated
+# or mid-label occurrence must NOT classify as tea.
+echo "Issue #245 — substring overreach (gitea mid-label) → unknown"
+assert_detect "gitlab.gitea-mirror.com (gitea-mirror, hyphen separator)" \
+  "https://gitlab.gitea-mirror.com/owner/repo.git" "unknown"
+assert_detect "my-gitea-instance.io (gitea is mid-label, hyphen separators)" \
+  "https://my-gitea-instance.io/owner/repo.git" "unknown"
+assert_detect "notgitea.example.com (gitea is a suffix of a longer label)" \
+  "https://notgitea.example.com/owner/repo.git" "unknown"
+assert_detect "gitea-mirror.com (gitea-mirror, hyphen not dot)" \
+  "https://gitea-mirror.com/owner/repo.git" "unknown"
+assert_detect "scp-like my-gitea-instance.io (gitea mid-label, SSH form)" \
+  "git@my-gitea-instance.io:owner/repo.git" "unknown"
+
+echo ""
+# --- Issue #245: tightened pattern keeps canonical Gitea hosts working ---
+echo "Issue #245 — canonical Gitea hosts still match → tea"
+assert_detect "gitea.com (gitea as leading label)" \
+  "https://gitea.com/owner/repo.git" "tea"
+assert_detect "something.gitea.example.com (gitea as middle label)" \
+  "https://something.gitea.example.com/owner/repo.git" "tea"
+
+echo ""
+# --- Issue #245: provider/host consistency on plain HTTP origins ---
+# detect_forge_host rejects HTTP at lib/forge.sh:86-89 (returns ""), but
+# detect_forge_provider used to trust the host substring and return a
+# concrete provider. That asymmetry let a 'tea' run silently proceed with
+# FORGE_HOST="". Provider must downgrade to 'unknown' on plain HTTP for
+# every provider so the two functions agree.
+echo "Issue #245 — plain HTTP origins downgrade provider → unknown"
+assert_detect "HTTP github.com (insecure scheme, must downgrade)" \
+  "http://github.com/owner/repo.git" "unknown"
+assert_detect "HTTP codeberg.org (insecure scheme, must downgrade)" \
+  "http://codeberg.org/owner/repo.git" "unknown"
+assert_detect "HTTP gitea subdomain (insecure scheme, must downgrade)" \
+  "http://gitea.example.com/owner/repo.git" "unknown"
+assert_detect "HTTP self-hosted Gitea with port (insecure scheme)" \
+  "http://my.gitea.example.com:3000/owner/repo.git" "unknown"
+
+echo ""
+# --- Issue #245: HTTP scheme guard is case-insensitive ---
+# The implementation uses the regex ^[Hh][Tt][Tt][Pp]:// so uppercase or
+# mixed-case schemes downgrade too. Without explicit coverage, a future
+# refactor to a lowercase-only check (e.g. ^http://) would regress silently
+# because callers typically lowercase the scheme before calling — but the
+# function itself takes the raw URL, so the scheme guard must handle case.
+echo "Issue #245 — HTTP scheme guard is case-insensitive → unknown"
+assert_detect "HTTP://github.com (uppercase scheme)" \
+  "HTTP://github.com/owner/repo.git" "unknown"
+assert_detect "Http://gitea.example.com (mixed-case scheme)" \
+  "Http://gitea.example.com/owner/repo.git" "unknown"
+assert_detect "hTtP://codeberg.org (alternating-case scheme)" \
+  "hTtP://codeberg.org/owner/repo.git" "unknown"
+
+echo ""
+# --- Issue #245: mixed-case HTTPS must NOT be swallowed by the HTTP guard ---
+# Tightness check on the [Hh][Tt][Tt][Pp]:// regex — the trailing `://` means
+# `HTTPS://` (extra `S` before the colon) must not match. If a future change
+# replaces the regex with a looser prefix match (e.g. ^http), HTTPS URLs would
+# wrongly downgrade. Lock the boundary in explicitly.
+echo "Issue #245 — mixed-case HTTPS is NOT downgraded (regex boundary check)"
+assert_detect "HTTPS://github.com (uppercase HTTPS still detects gh)" \
+  "HTTPS://github.com/owner/repo.git" "gh"
+assert_detect "Https://gitea.com (mixed-case HTTPS still detects tea)" \
+  "Https://gitea.com/owner/repo.git" "tea"
+
+echo ""
+# --- Issue #245: ssh:// URL form of gitea substring overreach ---
+# Symmetric with the scp-like coverage above (git@my-gitea-instance.io:...).
+# Both URL forms feed the same case-statement, but a future refactor could
+# diverge the paths — keep both forms asserted so neither regresses alone.
+echo "Issue #245 — ssh:// URL form of gitea substring overreach → unknown"
+assert_detect "ssh://my-gitea-instance.io (gitea mid-label, ssh URL form)" \
+  "ssh://git@my-gitea-instance.io/owner/repo.git" "unknown"
+assert_detect "ssh://gitlab.gitea-mirror.com (gitea-mirror, ssh URL form)" \
+  "ssh://git@gitlab.gitea-mirror.com/owner/repo.git" "unknown"
+
+echo ""
+# --- Issue #245: HTTP downgrade must NOT regress non-HTTP schemes ---
+echo "Issue #245 — non-HTTP schemes still detect (regression guards)"
+assert_detect "git://github.com still detects gh" \
+  "git://github.com/owner/repo.git" "gh"
+assert_detect "ssh://git@github.com still detects gh" \
+  "ssh://git@github.com/owner/repo.git" "gh"
+assert_detect "https://github.com still detects gh" \
+  "https://github.com/owner/repo.git" "gh"
+assert_detect "https://codeberg.org still detects fj" \
+  "https://codeberg.org/owner/repo.git" "fj"
+assert_detect "https://gitea.com still detects tea" \
+  "https://gitea.com/owner/repo.git" "tea"
+assert_detect "scp-like git@gitea.example.com still detects tea" \
+  "git@gitea.example.com:owner/repo.git" "tea"
+
+echo ""
+# --- Issue #245: provider/host agreement is the actual contract ---
+# Lock in the invariant that the two functions agree on every URL the test
+# suite exercises: if provider is non-'unknown', host must be non-empty;
+# if host is empty, provider must be 'unknown'. (Exception: bare 'gh' over
+# git:// or scp-like SSH today returns provider=gh but host="" because
+# detect_forge_host's regex only handles scheme://… — that pre-existing
+# divergence is out of scope for this issue and is NOT asserted here.)
+echo "Issue #245 — provider/host agreement on HTTPS and plain HTTP"
+TOTAL=$((TOTAL + 1))
+provider="$(detect_forge_provider 'http://gitea.example.com/owner/repo.git')"
+host="$(detect_forge_host    'http://gitea.example.com/owner/repo.git')"
+if [[ "$provider" == "unknown" && -z "$host" ]]; then
+  PASS=$((PASS + 1))
+  echo "  PASS: HTTP gitea — provider='unknown' AND host='' (consistent)"
+else
+  FAIL=$((FAIL + 1))
+  echo "  FAIL: HTTP gitea — provider='$provider' host='$host' (must both be empty/unknown)"
+fi
+
+TOTAL=$((TOTAL + 1))
+provider="$(detect_forge_provider 'https://gitea.example.com/owner/repo.git')"
+host="$(detect_forge_host    'https://gitea.example.com/owner/repo.git')"
+if [[ "$provider" == "tea" && -n "$host" ]]; then
+  PASS=$((PASS + 1))
+  echo "  PASS: HTTPS gitea — provider='tea' AND host non-empty (consistent)"
+else
+  FAIL=$((FAIL + 1))
+  echo "  FAIL: HTTPS gitea — provider='$provider' host='$host' (provider must be tea AND host non-empty)"
+fi
+
+echo ""
 # --- Output contract: exactly one token, no trailing whitespace beyond newline ---
 echo "Output contract — exactly one of {gh, tea, fj, unknown}"
 TOTAL=$((TOTAL + 1))

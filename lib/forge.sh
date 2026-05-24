@@ -21,10 +21,14 @@ set -uo pipefail
 #   Prints exactly one of: gh | tea | fj | unknown
 #
 #   Detection rules:
-#     host == github.com         -> gh
-#     host == codeberg.org       -> fj
-#     host matches *gitea*       -> tea   (case-insensitive substring)
-#     anything else / malformed  -> unknown
+#     host == github.com                  -> gh
+#     host == codeberg.org                -> fj
+#     host matches gitea.* or *.gitea.*   -> tea  (gitea must be a full DNS
+#                                                  label, not a substring)
+#     scheme == http                      -> unknown  (mirrors detect_forge_host's
+#                                                      plain-HTTP rejection so the
+#                                                      two functions stay consistent)
+#     anything else / malformed           -> unknown
 #
 #   Supported URL forms:
 #     https://[user@]host[:port]/owner/repo[.git]
@@ -42,16 +46,26 @@ detect_forge_provider() {
     return 0
   fi
 
+  # Plain HTTP origins are rejected to mirror detect_forge_host's HTTP guard
+  # (lib/forge.sh:86-89). Without this, an `http://gitea.example.com/...`
+  # would yield provider='tea' while host='', leaving FORGE_HOST silently empty.
+  if [[ "$url" =~ ^[Hh][Tt][Tt][Pp]:// ]]; then
+    printf 'unknown\n'
+    return 0
+  fi
+
   # Hosts are case-insensitive per RFC 3986 §3.2.2.
   local host_lower="${host,,}"
 
   # Exact-match rules come first so a host like "gitea.github.com" (hypothetical)
-  # would not incorrectly classify as tea.
+  # would not incorrectly classify as tea. The gitea pattern requires "gitea"
+  # to be a full DNS label (delimited by dots) so substrings like
+  # "gitlab.gitea-mirror.com" or "my-gitea-instance.io" do not false-match.
   case "$host_lower" in
-    github.com)    printf 'gh\n' ;;
-    codeberg.org)  printf 'fj\n' ;;
-    *gitea*)       printf 'tea\n' ;;
-    *)             printf 'unknown\n' ;;
+    github.com)         printf 'gh\n' ;;
+    codeberg.org)       printf 'fj\n' ;;
+    gitea.*|*.gitea.*)  printf 'tea\n' ;;
+    *)                  printf 'unknown\n' ;;
   esac
   return 0
 }
