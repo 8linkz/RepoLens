@@ -161,7 +161,7 @@ _write_status_snapshot_locked() {
   local now_iso now_epoch started_at issues_created health
   local heartbeat_file
 
-  if [[ "$state" == "running" && -f "$status_file" ]]; then
+  if [[ "$state" == "running" && -f "$status_file" && "${REPOLENS_STATUS_ALLOW_RUNNING_OVER_TERMINAL:-false}" != "true" ]]; then
     case "$(jq -r '.state // empty' "$status_file" 2>/dev/null || true)" in
       finished|finished-empty|failed|interrupted)
         return 0

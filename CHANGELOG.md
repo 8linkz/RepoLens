@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- `repolens.sh clean` subcommand: removes old run directories under `logs/` by age (`--older-than <dur>`, default `30d`) and count (`--keep-last <n>`, default `50`), with `--dry-run`, `--force`, and `--remove-incomplete`. It uses a strictly positive selector — only run-id-named children of `logs/` carrying `summary.json` or `status.json` are ever considered — keeps resume candidates by default, and always keeps currently-live runs. The confirmation prompt is auto-skipped when stdin is not a terminal. Opt-in startup auto-retention runs the same prune in the background when `REPOLENS_AUTO_CLEAN=true` (`REPOLENS_RETENTION_DAYS` default `30`, `REPOLENS_KEEP_LAST` default `50`) and logs the resolved retention settings at INFO; off by default. Per-lens forensic `iteration-N-TIMESTAMP.txt` captures are now gzipped after a lens finishes, keeping the most recent `REPOLENS_ITERATION_KEEP` (default `3`) uncompressed — this data is never read by synthesis, verification, or `--resume` ([#251](https://github.com/TheMorpheus407/RepoLens/issues/251))
 - Pricing staleness warning: when `config/agent-pricing.json` is more than 60 days old, the confirmation prompt and `--dry-run` output emit `[WARN] Pricing data is N days old — estimates may be inaccurate`. The warning is informational and does not block execution ([#249](https://github.com/TheMorpheus407/RepoLens/issues/249))
 
 ## [0.2.0] — 2026-05-24

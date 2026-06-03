@@ -489,7 +489,7 @@ _rounds_meta_slug() {
 }
 
 _rounds_meta_custom_category_from_payload() {
-  local payload="$1" line trimmed category attribute_start
+  local payload="$1" line trimmed category
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     trimmed="$(_rounds_meta_trim "$line")"
@@ -1992,12 +1992,12 @@ build_round_digest() {
       printf '\n'
 
       printf '## Findings\n'
-      local emitted=0 max_findings=30 record record_score record_lens record_id record_severity record_confidence
+      local emitted=0 max_findings=30 _record_score record_lens record_id record_severity record_confidence
       local record_domain record_category record_files record_hypothesis
       if (( ${#finding_records[@]} == 0 )); then
         printf 'none\n'
       else
-        while IFS=$'\t' read -r record_score record_lens record_id record_severity record_confidence record_domain record_category record_files record_hypothesis; do
+        while IFS=$'\t' read -r _record_score record_lens record_id record_severity record_confidence record_domain record_category record_files record_hypothesis; do
           if (( emitted >= max_findings )); then
             _round_digest_omitted_lens_counts["$record_lens"]=$(( ${_round_digest_omitted_lens_counts["$record_lens"]:-0} + 1 ))
             continue
@@ -2290,6 +2290,13 @@ run_rounds() {
     round_rc=$?
     if (( round_rc != 0 )); then
       return "$round_rc"
+    fi
+
+    CURRENT_ROUND_INDEX=""
+    CURRENT_ROUND_TOTAL=""
+    if (( rounds_total > 1 )); then
+      CURRENT_ROUND_INDEX="$round"
+      CURRENT_ROUND_TOTAL="$rounds_total"
     fi
 
     if (( rounds_total > 1 )); then

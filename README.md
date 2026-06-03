@@ -325,6 +325,7 @@ See [METHODOLOGY.md](METHODOLOGY.md) for the design rationale behind within-lens
 ```
 Usage: repolens.sh --project <path|url> --agent <agent> [OPTIONS]
        repolens.sh status [run-id] [OPTIONS]
+       repolens.sh clean [OPTIONS]
 ```
 
 ### Commands
@@ -332,6 +333,7 @@ Usage: repolens.sh --project <path|url> --agent <agent> [OPTIONS]
 | Command           | Description                                                                                                                                                    |
 | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `status [run-id]` | Show a live run snapshot from `logs/<run-id>/status.json`. If `run-id` is omitted, RepoLens selects the newest run that has a status file. Requires only `jq`. |
+| `clean [OPTIONS]`  | Remove old run directories under `logs/`. Only genuine run dirs are considered; resume candidates are kept by default, and currently-live runs are always kept. Needs no `--project`/`--agent`. See [Cleaning Up Old Runs](#cleaning-up-old-runs). |
 
 ### Required Flags
 
@@ -461,6 +463,10 @@ REPOLENS_AGENT_TIMEOUT_OPENCODE=3600 ./repolens.sh --project ~/my-app --agent op
 | `REPOLENS_LENS_HEARTBEAT_INTERVAL`   | unset    | Per-lens heartbeat file interval override in seconds. Wins over `REPOLENS_HEARTBEAT_INTERVAL` for files only; default file interval is `15` seconds when both variables are unset. Set to `0` to disable per-lens heartbeat files without changing parallel log heartbeats.                                                                                                                                                                                                                                     |
 | `REPOLENS_STATUS_INTERVAL`           | `10`     | Whole-run `logs/<run-id>/status.json` refresh interval in seconds. Must be a positive integer; invalid values and `0` fall back to `10`. RepoLens writes the first snapshot immediately after run setup, then refreshes it while the run is active and writes a final `finished`, `finished-empty`, `failed`, or `interrupted` snapshot on exit.                                                                                                                                                                  |
 | `REPOLENS_CLEANUP_GRACE`             | `5`      | Interrupt cleanup grace in seconds for tracked parallel workers. When a parallel run receives Ctrl-C or TERM, RepoLens asks tracked workers to stop, waits up to this many seconds, then force-stops any workers still running so cleanup returns. Set to `0` to skip the grace wait. Must be a non-negative integer.                                                                                                                                                                                            |
+| `REPOLENS_AUTO_CLEAN`                | `false`  | Set to `true` to prune old run directories under `logs/` in the background at startup, using `REPOLENS_RETENTION_DAYS` and `REPOLENS_KEEP_LAST`. The prune logs an INFO line with the resolved retention settings, never blocks or fails the run, keeps resume candidates and live runs, and applies the same safe selector as `repolens.sh clean`. Off by default; equivalent to running `clean` by hand.                                                                                                     |
+| `REPOLENS_RETENTION_DAYS`            | `30`     | Age threshold in days for the `REPOLENS_AUTO_CLEAN` startup prune — runs older than this are eligible for removal. Non-numeric values fall back to the default. No effect unless `REPOLENS_AUTO_CLEAN=true`.                                                                                                                                                                                                                                                                                                   |
+| `REPOLENS_KEEP_LAST`                 | `50`     | Number of most-recent runs the `REPOLENS_AUTO_CLEAN` startup prune always protects, regardless of age. Non-numeric values fall back to the default. No effect unless `REPOLENS_AUTO_CLEAN=true`.                                                                                                                                                                                                                                                                                                               |
+| `REPOLENS_ITERATION_KEEP`            | `3`      | Number of most-recent per-lens forensic `iteration-N-TIMESTAMP.txt` captures kept uncompressed after a lens finishes. Older captures are gzipped to `.txt.gz` to save disk; this is forensic-only data and never read by synthesis, verification, or `--resume`. Compression is skipped silently when `gzip` is unavailable.                                                                                                                                                                                  |
 
 ### Per-Lens Heartbeat Files
 
@@ -517,6 +523,35 @@ Omit the watch interval to use the 5-second default. Use `--no-color` when pipin
 `status.json` is refreshed atomically at `REPOLENS_STATUS_INTERVAL` seconds and is safe for humans, scripts, and monitoring tools to read while RepoLens is running. It includes run metadata, `state`, `health`, `total_lenses`, `completion_percentage`, aggregate `counts`, and the `active`, `queued`, and `completed` lens lists.
 
 The `state` value is `running` during execution, then `finished` when at least one finding was created, `finished-empty` when no findings were created without a degenerate failure, `failed` when the run health gate detects a broken zero-finding run, or `interrupted` after Ctrl-C or TERM. Final snapshots also include `health`: `ok` when findings exist, `no-findings` for a clean zero-finding run, `empty` when no lenses ran, or `broken` when zero findings were created and at least `REPOLENS_DEGENERATE_THRESHOLD` percent of run lenses ended as `max-iterations`. `active` entries come from per-lens heartbeat files and include `pid`, `iteration`, `started_at`, `last_heartbeat_at`, `age_seconds`, and `heartbeat_age_seconds`; stale heartbeat files are still reported. `queued` lists resolved lenses that are neither active nor completed. `completed` reflects completed lenses, including existing completed state when using `--resume`. `counts.issues_created` comes from `logs/<run-id>/summary.json`.
+
+### Cleaning Up Old Runs
+
+Run directories under `logs/` accumulate over time and are never removed automatically by default. The `clean` subcommand prunes old ones:
+
+```bash
+# Remove runs older than 30 days, always keeping the 50 most recent (defaults)
+./repolens.sh clean
+
+# Remove runs older than a week
+./repolens.sh clean --older-than 7d
+
+# Preview what would be removed without deleting anything
+./repolens.sh clean --dry-run
+```
+
+`clean` is deliberately conservative. It only ever considers a direct child of `logs/` whose name is a genuine run id and that carries a `summary.json` or `status.json` — AutoDev working state, partial directories, and anything else under `logs/` are never touched. By default, it also keeps any run that is still resumable (incomplete, interrupted, failed, or with a recorded stop reason). Runs that a process is using right now are always kept.
+
+| Option                | Default | Description                                                                                                                    |
+| --------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `--older-than <dur>`  | `30d`   | Remove runs older than this age. Suffix `d`/`h`/`m` for days/hours/minutes, or pass a bare number of seconds.                   |
+| `--keep-last <n>`     | `50`    | Always protect the N most recent runs, regardless of age.                                                                       |
+| `--keep-incomplete`   | on      | Keep resume-candidate runs (running/interrupted/failed, a non-null stop reason, or an abort sentinel). On by default.           |
+| `--remove-incomplete` | —       | Opposite of `--keep-incomplete`: also remove resume candidates that are otherwise eligible.                                     |
+| `--dry-run`           | —       | Print the run ids that would be removed and delete nothing.                                                                     |
+| `--force`             | —       | Skip the confirmation prompt. The prompt is also skipped automatically when stdin is not an interactive terminal (CI/AutoDev). |
+| `-h`, `--help`        | —       | Show `clean` help.                                                                                                              |
+
+To prune automatically at startup instead of running `clean` by hand, set `REPOLENS_AUTO_CLEAN=true` (see [Environment Variables](#environment-variables)). RepoLens logs the resolved retention settings at INFO before starting the background prune. This is off by default.
 
 ## Domains & Lenses (335 total across 32 domains)
 
@@ -619,7 +654,7 @@ Completed lenses are skipped. The run ID is printed at startup and found in `log
 - **Local Markdown** — With `--local`, findings are written as individual markdown files to `<output-dir>/<domain>/<lens-id>/NNN-slug.md` with YAML frontmatter (title, severity, domain, lens, labels). Default output directory: `logs/<run-id>/rounds/round-1/lens-outputs/`
 - **Round Artifacts** — Every run creates `logs/<run-id>/rounds/round-N/` for each resolved round, including `metadata.json`, `lens-outputs/`, and `digest.md`. `round-N/.completed` appears only after that round finishes cleanly. Multi-round runs write between-round `dispatch.md` handoff files on completed rounds before the final round
 - **Final Artifacts** — Every run creates `logs/<run-id>/final/` and `logs/<run-id>/final/filed/`. Successful multi-round runs promote a schema-validated `logs/<run-id>/final/manifest.json`; later filing stages record filed issue links under `final/filed/`
-- **Logs** — `logs/<run-id>/<domain>/<lens>/iteration-N-TIMESTAMP.txt`
+- **Logs** — `logs/<run-id>/<domain>/<lens>/iteration-N-TIMESTAMP.txt`. After a lens finishes, all but the most recent `REPOLENS_ITERATION_KEEP` (default `3`) of these forensic captures are gzipped to `.txt.gz`. Prune whole run directories with `./repolens.sh clean`
 - **Heartbeats** — Active lenses write `logs/<run-id>/.heartbeat/<domain>__<lens-id>.json`; files are removed after clean lens completion and left behind if a worker exits abnormally
 - **Status** — `logs/<run-id>/status.json`, refreshed during the run with queued, active, completed, issue-count, completion-percentage, run-health, and final-state data; render it with `./repolens.sh status [run-id]`
 - **Summary** — `logs/<run-id>/summary.json`, including per-lens status, iterations, issue counts, `rate_limit_sleep_seconds`, final `health`, and run-level `stopped_reason` when an agent abort guard or the run-health gate stops the run

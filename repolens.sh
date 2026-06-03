@@ -42,6 +42,8 @@ source "$SCRIPT_DIR/lib/summary.sh"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/status.sh"
 # shellcheck source=/dev/null
+source "$SCRIPT_DIR/lib/clean.sh"
+# shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/parallel.sh"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/rounds.sh"
@@ -113,6 +115,7 @@ usage() {
   cat <<'EOF'
 Usage: repolens.sh --project <path> --agent <agent> [OPTIONS]
        repolens.sh status [run-id] [OPTIONS]
+       repolens.sh clean [OPTIONS]
 
 RepoLens — Multi-lens code audit tool. Runs expert analysis agents against
 any git repository and creates remote issues for real findings.
@@ -123,6 +126,7 @@ Required:
 
 Commands:
   status [run-id]         Show a live run snapshot from logs/<run-id>/status.json
+  clean [OPTIONS]         Remove old run directories under logs/ (see clean --help)
 
 Options:
   --mode <mode>           audit (default) | feature | bugfix | bugreport | discover | deploy | custom | opensource | content
@@ -415,6 +419,14 @@ EOF
 if [[ "${1:-}" == "status" ]]; then
   shift
   status_command "$@"
+  exit "$?"
+fi
+
+# `clean` removes old run dirs; it needs no --project/--agent, so dispatch it
+# here alongside status, before run validation.
+if [[ "${1:-}" == "clean" ]]; then
+  shift
+  clean_command "$@"
   exit "$?"
 fi
 
@@ -1555,6 +1567,10 @@ if $BASE_WRAPPER_FALLBACK; then
   log_warn "Base wrapper $BASE_PROMPTS_DIR/android.md missing; falling back to deploy.md (server-flavored safety wording on an Android target)"
 fi
 
+# Opt-in startup retention: prune old run dirs in the background (no-op unless
+# REPOLENS_AUTO_CLEAN=true). Never blocks or fails the run.
+maybe_auto_clean
+
 log_info "RepoLens run $RUN_ID starting"
 log_info "Project: $PROJECT_PATH ($FORGE_REPO_SLUG)"
 log_info "Agent: $AGENT | Mode: $MODE | Parallel: $PARALLEL"
@@ -2506,7 +2522,14 @@ if $HOSTED && $PARALLEL; then
   PARALLEL=false
 fi
 
-start_status_updater "$RUN_ID" "$LOG_BASE" "$HEARTBEAT_DIR" "$completed_lenses_file" "$SUMMARY_FILE" "$PROJECT_PATH" "$FORGE_REPO_SLUG" "$MODE" "$AGENT" "$PARALLEL" "$MAX_PARALLEL" "${REMOTE_TARGET:-}" "${REMOTE_LABEL:-}"
+if [[ -n "$RESUME_RUN_ID" ]]; then
+  # shellcheck disable=SC2034 # Consumed by write_status_snapshot in sourced lib/status.sh.
+  REPOLENS_STATUS_ALLOW_RUNNING_OVER_TERMINAL=true
+  start_status_updater "$RUN_ID" "$LOG_BASE" "$HEARTBEAT_DIR" "$completed_lenses_file" "$SUMMARY_FILE" "$PROJECT_PATH" "$FORGE_REPO_SLUG" "$MODE" "$AGENT" "$PARALLEL" "$MAX_PARALLEL" "${REMOTE_TARGET:-}" "${REMOTE_LABEL:-}"
+  unset REPOLENS_STATUS_ALLOW_RUNNING_OVER_TERMINAL
+else
+  start_status_updater "$RUN_ID" "$LOG_BASE" "$HEARTBEAT_DIR" "$completed_lenses_file" "$SUMMARY_FILE" "$PROJECT_PATH" "$FORGE_REPO_SLUG" "$MODE" "$AGENT" "$PARALLEL" "$MAX_PARALLEL" "${REMOTE_TARGET:-}" "${REMOTE_LABEL:-}"
+fi
 
 # --- Run a single lens ---
 run_lens() {
@@ -2923,6 +2946,11 @@ run_lens() {
       && "$exit_status" != "max-tokens-truncation" && "$exit_status" != "agent-error" ]]; then
     mark_lens_completed "$lens_entry"
   fi
+
+  # Compress this lens's forensic iteration captures, keeping the most recent
+  # few uncompressed. Forensic-only — synth/verify/--resume read lens-outputs/,
+  # not iteration-*.txt — so this is safe and non-fatal.
+  compress_lens_iterations "$lens_log_dir" "${REPOLENS_ITERATION_KEEP:-3}"
 
   if (( heartbeat_interval > 0 )); then
     stop_lens_heartbeat_writer "$heartbeat_writer_pid" "$heartbeat_file" "$heartbeat_iteration_file" "true"
