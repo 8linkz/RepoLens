@@ -1402,6 +1402,16 @@ _round_digest_warn() {
   fi
 }
 
+_round_digest_content_mode_enabled() {
+  local mode="${REPOLENS_MODE:-${MODE:-}}"
+  [[ "$mode" == "content" ]]
+}
+
+_round_digest_title_is_content_priority_proposal() {
+  local title="${1:-}"
+  [[ "$title" =~ ^\[[Pp][0-3]\][[:space:]]* ]]
+}
+
 _round_digest_repo_root() {
   local rounds_lib_dir
   rounds_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -1498,9 +1508,13 @@ _round_digest_frontmatter_block() {
 }
 
 _round_digest_finding_segments() {
-  local file="$1"
+  local file="$1" content_mode=0
 
-  awk '
+  if _round_digest_content_mode_enabled; then
+    content_mode=1
+  fi
+
+  awk -v content_mode="$content_mode" '
     BEGIN {
       segment_sep = sprintf("%c", 30)
       field_sep = sprintf("%c", 31)
@@ -1522,6 +1536,8 @@ _round_digest_finding_segments() {
       has_severity = 0
       has_domain = 0
       has_lens = 0
+      has_content_priority_title = 0
+      has_content_audit_title = 0
       count = split(candidate, lines, "\n")
       for (i = 1; i <= count; i++) {
         if (lines[i] ~ /^[[:space:]]*severity[[:space:]]*:/) {
@@ -1530,9 +1546,13 @@ _round_digest_finding_segments() {
           has_domain = 1
         } else if (lines[i] ~ /^[[:space:]]*(lens_id|lens)[[:space:]]*:/) {
           has_lens = 1
+        } else if (content_mode == 1 && lines[i] ~ /^[[:space:]]*title[[:space:]]*:[[:space:]]*["'\'']?\[[Pp][0-3]\][[:space:]]*/) {
+          has_content_priority_title = 1
+        } else if (content_mode == 1 && lines[i] ~ /^[[:space:]]*title[[:space:]]*:[[:space:]]*["'\'']?\[([Cc][Rr][Ii][Tt][Ii][Cc][Aa][Ll]|[Hh][Ii][Gg][Hh]|[Mm][Ee][Dd][Ii][Uu][Mm]|[Ll][Oo][Ww])\][[:space:]]*/) {
+          has_content_audit_title = 1
         }
       }
-      return has_severity && has_domain && has_lens
+      return (has_severity || has_content_priority_title || has_content_audit_title) && has_domain && has_lens
     }
     NR == 1 && $0 != "---" {
       exit 1
@@ -1786,10 +1806,10 @@ _round_digest_rank_suspect_files() {
 
 build_round_digest() {
   local round_dir="${1:-}" lens_outputs_dir digest_path repo_root domains_file
-  local file segment segment_sep field_sep segments_output frontmatter body severity domain lens category normalized category_seen primary_category
+  local file segment segment_sep field_sep segments_output frontmatter body raw_severity severity domain lens category normalized category_seen primary_category
   local suspect_file audit_domain audit_total coverage_count coverage_domains registered_lens display_lens
   local round_number confidence confidence_rank severity_rank_value score finding_id hypothesis files_display title_text finding_identity
-  local omitted_total
+  local omitted_total content_mode content_priority
   local tmp_digest digest_lines
   local -a md_files=() sorted_lenses=() touched_domains=() finding_records=() finding_segments=() suspect_files=() display_files=()
   local -A _round_digest_lens_counts=()
@@ -1828,6 +1848,10 @@ build_round_digest() {
   if (( audit_total == 0 )); then
     audit_total=27
   fi
+  content_mode=0
+  if _round_digest_content_mode_enabled; then
+    content_mode=1
+  fi
 
   if [[ -d "$lens_outputs_dir" ]]; then
     mapfile -t md_files < <(find "$lens_outputs_dir" -type f -name '*.md' -print | LC_ALL=C sort)
@@ -1852,14 +1876,21 @@ build_round_digest() {
       frontmatter="${segment%%"$field_sep"*}"
       body="${segment#*"$field_sep"}"
 
-      severity="$(severity_normalize "$(printf '%s\n' "$frontmatter" | _round_digest_frontmatter_scalar "severity")")"
+      title_text="$(printf '%s\n' "$frontmatter" | _round_digest_frontmatter_scalar "title" | _round_digest_inline_text 160)"
+      raw_severity="$(printf '%s\n' "$frontmatter" | _round_digest_frontmatter_scalar "severity")"
+      severity="$(severity_normalize "$raw_severity")"
       domain="$(printf '%s\n' "$frontmatter" | _round_digest_frontmatter_scalar "domain")"
       lens="$(printf '%s\n' "$frontmatter" | _round_digest_frontmatter_scalar "lens_id")"
       if [[ -z "$lens" ]]; then
         lens="$(printf '%s\n' "$frontmatter" | _round_digest_frontmatter_scalar "lens")"
       fi
 
-      if [[ -z "$severity" || -z "$domain" || -z "$lens" ]]; then
+      content_priority=0
+      if (( content_mode )) && _round_digest_title_is_content_priority_proposal "$title_text"; then
+        content_priority=1
+      fi
+
+      if [[ -z "$domain" || -z "$lens" ]]; then
         _round_digest_warn "Skipping malformed lens output $(basename "$file"): required frontmatter keys severity, domain, and lens_id or lens are required"
         continue
       fi
@@ -1867,8 +1898,26 @@ build_round_digest() {
         _round_digest_warn "Skipping untrusted lens output $(basename "$file"): lens id is not registered"
         continue
       fi
-      if [[ -n "${REPOLENS_MIN_SEVERITY:-}" ]] && ! severity_meets_min "$severity" "$REPOLENS_MIN_SEVERITY"; then
-        continue
+
+      if (( content_priority )); then
+        severity="priority"
+      else
+        if [[ -z "$severity" ]]; then
+          if (( content_mode )); then
+            if [[ -n "$raw_severity" ]]; then
+              _round_digest_warn "round digest: dropping content audit finding with invalid severity $raw_severity: ${title_text:-<untitled>}"
+            else
+              _round_digest_warn "round digest: dropping content audit finding with missing severity: ${title_text:-<untitled>}"
+            fi
+          else
+            _round_digest_warn "Skipping malformed lens output $(basename "$file"): required frontmatter keys severity, domain, and lens_id or lens are required"
+          fi
+          continue
+        fi
+
+        if [[ -n "${REPOLENS_MIN_SEVERITY:-}" ]] && ! severity_meets_min "$severity" "$REPOLENS_MIN_SEVERITY"; then
+          continue
+        fi
       fi
 
       _round_digest_lens_counts["$lens"]=$(( ${_round_digest_lens_counts["$lens"]:-0} + 1 ))
@@ -1919,7 +1968,6 @@ build_round_digest() {
       [[ -n "$round_number" ]] || round_number="0"
       hypothesis="$(printf '%s\n' "$body" | _round_digest_section_text_from_stream "hypothesis" | _round_digest_inline_text 200)"
       [[ -n "$hypothesis" ]] || hypothesis="(missing)"
-      title_text="$(printf '%s\n' "$frontmatter" | _round_digest_frontmatter_scalar "title" | _round_digest_inline_text 160)"
       finding_identity="$title_text"$'\n'"$hypothesis"
       finding_id="$(_round_digest_finding_id "$lens" "$domain" "$round_number" "$file" "$finding_identity" < <(printf '%s\n' "${suspect_files[@]}"))"
       if (( ${#display_files[@]} > 0 )); then

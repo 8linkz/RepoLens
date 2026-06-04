@@ -24,6 +24,8 @@ source "$SCRIPT_DIR/lib/template.sh"
 source "$SCRIPT_DIR/lib/synthesize.sh"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/streak.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib/rounds.sh"
 
 PASS=0
 FAIL=0
@@ -341,6 +343,122 @@ title: "[CRITICAL] Invalid severity content audit"
 severity: urgent
 ---
 # Invalid severity audit body
+EOF
+}
+
+write_content_round_digest_markdown_fixture() {
+  local round_dir="$1" out_file
+  out_file="$round_dir/lens-outputs/content-quality/topic-extraction.md"
+  mkdir -p "$(dirname "$out_file")"
+
+  cat > "$out_file" <<'EOF'
+---
+title: "[CRITICAL] Fix broken canonical links"
+severity: critical
+domain: content-quality
+lens_id: topic-extraction
+root_cause_category: content-critical-round-digest
+---
+
+## Hypothesis
+digest-critical-audit-kept
+
+---
+title: "[HIGH] Repair missing article outline"
+severity: high
+domain: content-quality
+lens_id: topic-extraction
+root_cause_category: content-high-round-digest
+---
+
+## Hypothesis
+digest-high-audit-kept
+
+---
+title: "[MEDIUM] Clarify archive teaser copy"
+severity: medium
+domain: content-quality
+lens_id: topic-extraction
+root_cause_category: content-medium-round-digest
+---
+
+## Hypothesis
+digest-medium-audit-dropped
+
+---
+title: "[LOW] Polish tag label casing"
+severity: low
+domain: content-quality
+lens_id: topic-extraction
+root_cause_category: content-low-round-digest
+---
+
+## Hypothesis
+digest-low-audit-dropped
+
+---
+title: "[P0] Publish migration guide"
+domain: content-quality
+lens_id: topic-extraction
+root_cause_category: content-proposal-p0-round-digest
+---
+
+## Hypothesis
+digest-p0-proposal-kept
+
+---
+title: "[P1] Add editorial calendar"
+severity: priority
+domain: content-quality
+lens_id: topic-extraction
+root_cause_category: content-proposal-p1-round-digest
+---
+
+## Hypothesis
+digest-p1-proposal-kept
+
+---
+title: "[P2] Refresh onboarding examples"
+severity: low
+domain: content-quality
+lens_id: topic-extraction
+root_cause_category: content-proposal-p2-round-digest
+---
+
+## Hypothesis
+digest-p2-proposal-kept
+
+---
+title: "[P3] Add glossary sidebar"
+severity: not-applicable
+domain: content-quality
+lens_id: topic-extraction
+root_cause_category: content-proposal-p3-round-digest
+---
+
+## Hypothesis
+digest-p3-proposal-kept
+
+---
+title: "[HIGH] Missing severity content audit"
+domain: content-quality
+lens_id: topic-extraction
+root_cause_category: content-missing-severity-round-digest
+---
+
+## Hypothesis
+digest-missing-severity-audit-dropped
+
+---
+title: "[CRITICAL] Invalid severity content audit"
+severity: urgent
+domain: content-quality
+lens_id: topic-extraction
+root_cause_category: content-invalid-severity-round-digest
+---
+
+## Hypothesis
+digest-invalid-severity-audit-dropped
 EOF
 }
 
@@ -672,6 +790,114 @@ assert_eq "non-content local markdown count still applies generic severity filte
 assert_eq "non-content local markdown count does not emit content audit warnings" \
   "" \
   "$non_content_local_errors"
+
+echo ""
+echo "=== content round digest min-severity fixture ==="
+
+content_round_dir="$TEST_TMPDIR/content-round-digest/rounds/round-1"
+write_content_round_digest_markdown_fixture "$content_round_dir"
+
+export MODE=content
+export REPOLENS_MODE=content
+export REPOLENS_MIN_SEVERITY=high
+build_round_digest "$content_round_dir" 2>"$TEST_TMPDIR/content-round-digest.err"
+round_digest_status=$?
+round_digest="$(cat "$content_round_dir/digest.md" 2>/dev/null || true)"
+round_digest_errors="$(cat "$TEST_TMPDIR/content-round-digest.err")"
+unset REPOLENS_MIN_SEVERITY MODE REPOLENS_MODE
+
+assert_success "content round digest returns success" "$round_digest_status"
+assert_contains "content round digest counts critical/high audits and all proposals" \
+  "topic-extraction: 6 findings" \
+  "$round_digest"
+assert_contains "content round digest keeps critical audit finding" \
+  "digest-critical-audit-kept" \
+  "$round_digest"
+assert_contains "content round digest keeps high audit finding" \
+  "digest-high-audit-kept" \
+  "$round_digest"
+assert_not_contains "content round digest drops medium audit finding" \
+  "digest-medium-audit-dropped" \
+  "$round_digest"
+assert_not_contains "content round digest drops low audit finding" \
+  "digest-low-audit-dropped" \
+  "$round_digest"
+assert_contains "content round digest keeps P0 proposal without severity" \
+  "digest-p0-proposal-kept" \
+  "$round_digest"
+assert_contains "content round digest keeps P1 proposal with priority metadata" \
+  "digest-p1-proposal-kept" \
+  "$round_digest"
+assert_contains "content round digest keeps P2 proposal below audit threshold" \
+  "digest-p2-proposal-kept" \
+  "$round_digest"
+assert_contains "content round digest keeps P3 proposal with non-severity metadata" \
+  "digest-p3-proposal-kept" \
+  "$round_digest"
+assert_not_contains "content round digest drops missing-severity audit finding" \
+  "digest-missing-severity-audit-dropped" \
+  "$round_digest"
+assert_not_contains "content round digest drops invalid-severity audit finding" \
+  "digest-invalid-severity-audit-dropped" \
+  "$round_digest"
+assert_matches "content round digest warns about missing severity audit entries" \
+  "(missing severity|invalid severity).*Missing severity content audit|Missing severity content audit.*(missing severity|invalid severity)" \
+  "$round_digest_errors"
+assert_matches "content round digest warns about invalid severity audit entries" \
+  "invalid severity.*Invalid severity content audit|Invalid severity content audit.*invalid severity" \
+  "$round_digest_errors"
+assert_not_contains "content round digest does not warn about P0 missing severity proposal" \
+  "[P0] Publish migration guide" \
+  "$round_digest_errors"
+assert_not_contains "content round digest does not warn about P1 non-severity proposal metadata" \
+  "[P1] Add editorial calendar" \
+  "$round_digest_errors"
+assert_not_contains "content round digest does not warn about P2 below-threshold proposal metadata" \
+  "[P2] Refresh onboarding examples" \
+  "$round_digest_errors"
+assert_not_contains "content round digest does not warn about P3 non-severity proposal metadata" \
+  "[P3] Add glossary sidebar" \
+  "$round_digest_errors"
+
+content_round_mode_only_dir="$TEST_TMPDIR/content-round-digest-mode-only/rounds/round-1"
+write_content_round_digest_markdown_fixture "$content_round_mode_only_dir"
+
+export MODE=content
+unset REPOLENS_MODE
+export REPOLENS_MIN_SEVERITY=high
+build_round_digest "$content_round_mode_only_dir" 2>"$TEST_TMPDIR/content-round-digest-mode-only.err"
+round_digest_mode_only_status=$?
+round_digest_mode_only="$(cat "$content_round_mode_only_dir/digest.md" 2>/dev/null || true)"
+round_digest_mode_only_errors="$(cat "$TEST_TMPDIR/content-round-digest-mode-only.err")"
+unset REPOLENS_MIN_SEVERITY MODE REPOLENS_MODE
+
+assert_success "MODE=content alone activates round digest content filtering" "$round_digest_mode_only_status"
+assert_contains "MODE=content alone keeps round digest priority proposals" \
+  "topic-extraction: 6 findings" \
+  "$round_digest_mode_only"
+assert_not_contains "MODE=content alone does not warn about P0 missing severity proposal" \
+  "[P0] Publish migration guide" \
+  "$round_digest_mode_only_errors"
+
+content_round_repolens_mode_only_dir="$TEST_TMPDIR/content-round-digest-repolens-mode-only/rounds/round-1"
+write_content_round_digest_markdown_fixture "$content_round_repolens_mode_only_dir"
+
+unset MODE
+export REPOLENS_MODE=content
+export REPOLENS_MIN_SEVERITY=high
+build_round_digest "$content_round_repolens_mode_only_dir" 2>"$TEST_TMPDIR/content-round-digest-repolens-mode-only.err"
+round_digest_repolens_mode_only_status=$?
+round_digest_repolens_mode_only="$(cat "$content_round_repolens_mode_only_dir/digest.md" 2>/dev/null || true)"
+round_digest_repolens_mode_only_errors="$(cat "$TEST_TMPDIR/content-round-digest-repolens-mode-only.err")"
+unset REPOLENS_MIN_SEVERITY MODE REPOLENS_MODE
+
+assert_success "REPOLENS_MODE=content alone activates round digest content filtering" "$round_digest_repolens_mode_only_status"
+assert_contains "REPOLENS_MODE=content alone keeps round digest priority proposals" \
+  "topic-extraction: 6 findings" \
+  "$round_digest_repolens_mode_only"
+assert_not_contains "REPOLENS_MODE=content alone does not warn about P0 missing severity proposal" \
+  "[P0] Publish migration guide" \
+  "$round_digest_repolens_mode_only_errors"
 
 export MODE=content
 export REPOLENS_MODE=content
