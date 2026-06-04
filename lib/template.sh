@@ -343,9 +343,51 @@ ${hypotheses_to_verify}
   # Step 4: Build and insert min-severity section
   local min_severity_section="" min_severity="${prompt_vars[MIN_SEVERITY]:-}"
   if [[ -n "$min_severity" ]]; then
-    min_severity_section="## Minimum Severity
+    if [[ "$mode" == "content" ]]; then
+      local eligible_audit_titles skipped_audit_titles
+      case "${min_severity,,}" in
+        critical)
+          eligible_audit_titles="[CRITICAL]"
+          skipped_audit_titles="[HIGH], [MEDIUM], and [LOW]"
+          ;;
+        high)
+          eligible_audit_titles="[CRITICAL] and [HIGH]"
+          skipped_audit_titles="[MEDIUM] and [LOW]"
+          ;;
+        medium)
+          eligible_audit_titles="[CRITICAL], [HIGH], and [MEDIUM]"
+          skipped_audit_titles="[LOW]"
+          ;;
+        low)
+          eligible_audit_titles="[CRITICAL], [HIGH], [MEDIUM], and [LOW]"
+          skipped_audit_titles=""
+          ;;
+        *)
+          eligible_audit_titles="[CRITICAL], [HIGH], [MEDIUM], and [LOW]"
+          skipped_audit_titles=""
+          ;;
+      esac
+
+      min_severity_section="## Minimum Severity
+
+Apply \`--min-severity ${min_severity}\` only to content audit findings that use severity titles: [CRITICAL], [HIGH], [MEDIUM], or [LOW].
+
+For audit findings at threshold **${min_severity}**, create issues only for ${eligible_audit_titles} audit findings."
+
+      if [[ -n "$skipped_audit_titles" ]]; then
+        min_severity_section+=" Skip ${skipped_audit_titles} audit findings below this threshold and do **not** call \`${forge_issue_create}\` for them."
+      else
+        min_severity_section+=" No audit severity titles are below this threshold."
+      fi
+
+      min_severity_section+="
+
+New content proposals titled [P0], [P1], [P2], or [P3] are proposal priorities, not severities. They remain valid and preserved under \`--min-severity\`; priority proposals must not be warned, dropped, skipped, or treated invalid merely because they use priority titles or non-severity metadata."
+    else
+      min_severity_section="## Minimum Severity
 
 Only create issues for findings whose severity is **${min_severity}** or higher. Do **not** call \`${forge_issue_create}\` for findings below this threshold; skip those findings instead. The severity order is: critical > high > medium > low."
+    fi
   fi
 
   prompt="${prompt//\{\{MIN_SEVERITY_SECTION\}\}/$min_severity_section}"
