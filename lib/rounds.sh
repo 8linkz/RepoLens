@@ -1402,6 +1402,45 @@ _round_digest_warn() {
   fi
 }
 
+_round_digest_info() {
+  if declare -F log_info >/dev/null 2>&1 && [[ -n "${_REPOLENS_LOG_FILE:-}" ]]; then
+    log_info "$*"
+  fi
+}
+
+_round_digest_filtered_state_file() {
+  [[ -n "${SUMMARY_FILE:-}" ]] || return 1
+  printf '%s/.local-min-severity-filtered' "$(dirname "$SUMMARY_FILE")"
+}
+
+_round_digest_record_filtered_locked() {
+  local state_file="$1" key="$2"
+
+  if [[ -f "$state_file" ]] && grep -Fxq -- "$key" "$state_file" 2>/dev/null; then
+    return 0
+  fi
+
+  increment_findings_filtered "$SUMMARY_FILE" 1 || return 1
+  printf '%s\n' "$key" >> "$state_file"
+}
+
+_round_digest_record_filtered() {
+  local file="$1" decision_type="$2" title="$3" severity="$4" state_file key
+
+  [[ -n "${SUMMARY_FILE:-}" && -f "${SUMMARY_FILE:-}" ]] || return 0
+  declare -F increment_findings_filtered >/dev/null 2>&1 || return 0
+
+  state_file="$(_round_digest_filtered_state_file)" || return 0
+  key="${decision_type}"$'\t'"${file}"$'\t'"${title}"$'\t'"${severity}"
+
+  if declare -F with_file_lock >/dev/null 2>&1; then
+    with_file_lock "${state_file}.lock" "${REPOLENS_SUMMARY_LOCK_TIMEOUT:-30}" \
+      _round_digest_record_filtered_locked "$state_file" "$key"
+  else
+    _round_digest_record_filtered_locked "$state_file" "$key"
+  fi
+}
+
 _round_digest_content_mode_enabled() {
   local mode="${REPOLENS_MODE:-${MODE:-}}"
   [[ "$mode" == "content" ]]
@@ -1809,7 +1848,7 @@ build_round_digest() {
   local file segment segment_sep field_sep segments_output frontmatter body raw_severity severity domain lens category normalized category_seen primary_category
   local suspect_file audit_domain audit_total coverage_count coverage_domains registered_lens display_lens
   local round_number confidence confidence_rank severity_rank_value score finding_id hypothesis files_display title_text finding_identity
-  local omitted_total content_mode content_priority
+  local omitted_total content_mode content_priority min_severity log_title
   local tmp_digest digest_lines
   local -a md_files=() sorted_lenses=() touched_domains=() finding_records=() finding_segments=() suspect_files=() display_files=()
   local -A _round_digest_lens_counts=()
@@ -1852,6 +1891,10 @@ build_round_digest() {
   if _round_digest_content_mode_enabled; then
     content_mode=1
   fi
+  min_severity=""
+  if [[ -n "${REPOLENS_MIN_SEVERITY:-}" ]]; then
+    min_severity="$(severity_normalize "$REPOLENS_MIN_SEVERITY")"
+  fi
 
   if [[ -d "$lens_outputs_dir" ]]; then
     mapfile -t md_files < <(find "$lens_outputs_dir" -type f -name '*.md' -print | LC_ALL=C sort)
@@ -1884,6 +1927,7 @@ build_round_digest() {
       if [[ -z "$lens" ]]; then
         lens="$(printf '%s\n' "$frontmatter" | _round_digest_frontmatter_scalar "lens")"
       fi
+      log_title="${title_text:-<untitled>}"
 
       content_priority=0
       if (( content_mode )) && _round_digest_title_is_content_priority_proposal "$title_text"; then
@@ -1903,11 +1947,14 @@ build_round_digest() {
         severity="priority"
       else
         if [[ -z "$severity" ]]; then
-          if (( content_mode )); then
+          if [[ -n "$min_severity" ]]; then
+            _round_digest_warn "[$domain/$lens] Finding \"$log_title\" has invalid severity: \"$raw_severity\" (expected critical, high, medium, or low) - skipping"
+            _round_digest_record_filtered "$file" "invalid" "$log_title" "$raw_severity" || return 1
+          elif (( content_mode )); then
             if [[ -n "$raw_severity" ]]; then
-              _round_digest_warn "round digest: dropping content audit finding with invalid severity $raw_severity: ${title_text:-<untitled>}"
+              _round_digest_warn "round digest: dropping content audit finding with invalid severity $raw_severity: $log_title"
             else
-              _round_digest_warn "round digest: dropping content audit finding with missing severity: ${title_text:-<untitled>}"
+              _round_digest_warn "round digest: dropping content audit finding with missing severity: $log_title"
             fi
           else
             _round_digest_warn "Skipping malformed lens output $(basename "$file"): required frontmatter keys severity, domain, and lens_id or lens are required"
@@ -1915,7 +1962,9 @@ build_round_digest() {
           continue
         fi
 
-        if [[ -n "${REPOLENS_MIN_SEVERITY:-}" ]] && ! severity_meets_min "$severity" "$REPOLENS_MIN_SEVERITY"; then
+        if [[ -n "$min_severity" ]] && ! severity_meets_min "$severity" "$min_severity"; then
+          _round_digest_info "[$domain/$lens] Dropped finding \"$log_title\" (severity=$severity < min=$min_severity)"
+          _round_digest_record_filtered "$file" "below" "$log_title" "$severity" || return 1
           continue
         fi
       fi

@@ -17,6 +17,8 @@
 # observable in the run log and summary.json.
 # Issue #263: local markdown min-severity filtering must provide the same
 # observability for dry-run/local paths.
+# Issue #264: round digest markdown findings must provide the same
+# observability when filtered by min severity.
 # shellcheck disable=SC2329
 
 set -uo pipefail
@@ -28,6 +30,7 @@ TEMPLATE_LIB="$SCRIPT_DIR/lib/template.sh"
 LOGGING_LIB="$SCRIPT_DIR/lib/logging.sh"
 SUMMARY_LIB="$SCRIPT_DIR/lib/summary.sh"
 CORE_LIB="$SCRIPT_DIR/lib/core.sh"
+ROUNDS_LIB="$SCRIPT_DIR/lib/rounds.sh"
 
 PASS=0
 FAIL=0
@@ -103,6 +106,22 @@ assert_file_matches() {
   fi
 }
 
+assert_file_not_matches() {
+  local desc="$1" path="$2" regex="$3"
+  TOTAL=$((TOTAL + 1))
+  if [[ -f "$path" ]] && ! grep -Eq "$regex" "$path"; then
+    pass_with "$desc"
+  else
+    local detail="Unexpected regex '$regex'"
+    if [[ -f "$path" ]]; then
+      detail+=" in $(cat "$path")"
+    else
+      detail+=" because $path does not exist"
+    fi
+    fail_with "$desc" "$detail"
+  fi
+}
+
 finish() {
   echo ""
   echo "Results: $PASS passed, $FAIL failed, $TOTAL total"
@@ -119,6 +138,10 @@ if [[ ! -f "$STREAK_LIB" ]]; then
   echo "  FAIL: lib/streak.sh missing at $STREAK_LIB"
   exit 1
 fi
+if [[ ! -f "$ROUNDS_LIB" ]]; then
+  echo "  FAIL: lib/rounds.sh missing at $ROUNDS_LIB"
+  exit 1
+fi
 
 # shellcheck disable=SC1090
 source "$TEMPLATE_LIB"
@@ -128,6 +151,8 @@ source "$LOGGING_LIB"
 source "$SUMMARY_LIB"
 # shellcheck disable=SC1090
 source "$CORE_LIB"
+# shellcheck disable=SC1090
+source "$ROUNDS_LIB"
 # shellcheck disable=SC1090
 source "$SYNTHESIZE_LIB"
 # shellcheck disable=SC1090
@@ -285,6 +310,131 @@ assert_file_matches "missing severity warning has code/input-validation attribut
 assert_file_matches "unknown severity warning has security/crypto attribution" "$log_file" '\[WARN\].*\[security/crypto\] Finding "\[urgent\] Unknown severity" has invalid severity: "urgent" \(expected critical, high, medium, or low\) - skipping'
 
 assert_eq "summary counts every filtered synthesizer finding" "4" "$filtered_count"
+
+echo ""
+echo "=== round digest min-severity observability ==="
+
+round_run_id="run-round-digest-min-severity-observability"
+round_log_dir="$TMPDIR/$round_run_id"
+round_project="$TMPDIR/round-project"
+round_summary="$round_log_dir/summary.json"
+round_output="$TMPDIR/round-output"
+round_dir="$round_log_dir/rounds/round-1"
+mkdir -p "$round_project" "$round_output" \
+  "$round_dir/lens-outputs/security/injection" \
+  "$round_dir/lens-outputs/code-quality/naming" \
+  "$round_dir/lens-outputs/code-quality/complexity" \
+  "$round_dir/lens-outputs/observability/structured-logging"
+
+cat > "$round_dir/lens-outputs/security/injection/001-kept-high.md" <<'MD'
+---
+title: "[HIGH] Round kept high"
+severity: high
+domain: security
+lens: injection
+root_cause_category: round-kept-high
+suspect_files:
+  - src/round-kept-high.sh
+---
+
+## Hypothesis
+Round kept high digest hypothesis.
+MD
+
+cat > "$round_dir/lens-outputs/security/injection/002-dropped-low.md" <<'MD'
+---
+title: "[LOW] Round dropped low"
+severity: low
+domain: security
+lens: injection
+root_cause_category: round-dropped-low
+suspect_files:
+  - src/round-dropped-low.sh
+---
+
+## Hypothesis
+Round dropped low digest hypothesis.
+MD
+
+cat > "$round_dir/lens-outputs/code-quality/naming/003-dropped-medium.md" <<'MD'
+---
+title: "[MEDIUM] Round dropped medium"
+severity: medium
+domain: code-quality
+lens: naming
+root_cause_category: round-dropped-medium
+suspect_files:
+  - src/round-dropped-medium.sh
+---
+
+## Hypothesis
+Round dropped medium digest hypothesis.
+MD
+
+cat > "$round_dir/lens-outputs/code-quality/complexity/004-missing-severity.md" <<'MD'
+---
+title: "[HIGH] Round missing severity"
+domain: code-quality
+lens: complexity
+root_cause_category: round-missing-severity
+suspect_files:
+  - src/round-missing-severity.sh
+---
+
+## Hypothesis
+Round missing severity digest hypothesis.
+MD
+
+cat > "$round_dir/lens-outputs/observability/structured-logging/005-unknown-severity.md" <<'MD'
+---
+title: "[URGENT] Round unknown severity"
+severity: urgent
+domain: observability
+lens: structured-logging
+root_cause_category: round-unknown-severity
+suspect_files:
+  - src/round-unknown-severity.sh
+---
+
+## Hypothesis
+Round unknown severity digest hypothesis.
+MD
+
+export PROJECT_PATH="$round_project"
+export LOG_BASE="$round_log_dir"
+export SUMMARY_FILE="$round_summary"
+export AGENT=codex
+export MODE=bugreport
+export REPOLENS_MODE=bugreport
+# repolens.sh normalizes --min-severity high into this exported value before
+# invoking the round digest path exercised by this fixture.
+export REPOLENS_MIN_SEVERITY=high
+
+init_logging "$round_run_id" "$round_log_dir"
+init_summary "$round_summary" "$round_run_id" "$round_project" "bugreport" "$AGENT" "" "" "local" "$round_output"
+
+build_round_digest "$round_dir" >"$TMPDIR/round-digest.out" 2>"$TMPDIR/round-digest.err"
+round_digest_status=$?
+
+round_log_file="$round_log_dir/$round_run_id.log"
+round_digest="$round_dir/digest.md"
+round_filtered_count="$(jq -r '.totals.findings_filtered // "missing"' "$round_summary" 2>/dev/null || true)"
+
+unset REPOLENS_MIN_SEVERITY REPOLENS_MODE MODE LOG_BASE SUMMARY_FILE PROJECT_PATH AGENT
+
+assert_success "round digest build succeeds with min severity high" "$round_digest_status"
+assert_file_exists "round digest markdown is written" "$round_digest"
+assert_file_matches "round digest keeps the high finding" "$round_digest" 'round-kept-high'
+assert_file_not_matches "round digest drops the low finding" "$round_digest" 'round-dropped-low'
+assert_file_not_matches "round digest drops the medium finding" "$round_digest" 'round-dropped-medium'
+assert_file_not_matches "round digest drops the missing-severity finding" "$round_digest" 'round-missing-severity'
+assert_file_not_matches "round digest drops the unknown-severity finding" "$round_digest" 'round-unknown-severity'
+
+assert_file_matches "low round digest drop info log has security/injection attribution" "$round_log_file" '\[INFO\].*\[security/injection\] Dropped finding "\[LOW\] Round dropped low" \(severity=low < min=high\)'
+assert_file_matches "medium round digest drop info log has code-quality/naming attribution" "$round_log_file" '\[INFO\].*\[code-quality/naming\] Dropped finding "\[MEDIUM\] Round dropped medium" \(severity=medium < min=high\)'
+assert_file_matches "missing severity round digest warning has code-quality/complexity attribution" "$round_log_file" '\[WARN\].*\[code-quality/complexity\] Finding "\[HIGH\] Round missing severity" has invalid severity: "" \(expected critical, high, medium, or low\) - skipping'
+assert_file_matches "unknown severity round digest warning has observability/structured-logging attribution" "$round_log_file" '\[WARN\].*\[observability/structured-logging\] Finding "\[URGENT\] Round unknown severity" has invalid severity: "urgent" \(expected critical, high, medium, or low\) - skipping'
+assert_eq "summary counts every filtered round digest finding" "4" "$round_filtered_count"
 
 echo ""
 echo "=== local markdown min-severity observability ==="
@@ -528,6 +678,89 @@ assert_eq "direct local markdown first scan records two filtered findings" "2" "
 assert_success "direct local markdown repeated count succeeds" "$dedupe_second_status"
 assert_eq "direct local markdown repeated count still keeps only high finding" "1" "$dedupe_second_count"
 assert_eq "direct local markdown repeated scan does not double-count filtered findings" "2" "$dedupe_after_second"
+
+echo ""
+echo "=== round digest filtered summary dedupe ==="
+
+round_dedupe_run_id="run-round-filtered-dedupe"
+round_dedupe_log_dir="$TMPDIR/$round_dedupe_run_id"
+round_dedupe_project="$TMPDIR/round-dedupe-project"
+round_dedupe_output="$TMPDIR/round-dedupe-output"
+round_dedupe_summary="$round_dedupe_log_dir/summary.json"
+round_dedupe_dir="$round_dedupe_log_dir/rounds/round-1"
+round_dedupe_lens_outputs="$round_dedupe_dir/lens-outputs"
+mkdir -p "$round_dedupe_log_dir" "$round_dedupe_project" "$round_dedupe_output" "$round_dedupe_lens_outputs"
+
+cat > "$round_dedupe_lens_outputs/001-kept-high.md" <<'MD'
+---
+title: "[HIGH] Shared counted high"
+severity: high
+domain: security
+lens: injection
+root_cause_category: shared-kept
+suspect_files:
+  - src/shared-kept.sh
+---
+
+## Summary
+Kept shared finding.
+MD
+
+cat > "$round_dedupe_lens_outputs/002-dropped-low.md" <<'MD'
+---
+title: "[LOW] Shared filtered low"
+severity: low
+domain: security
+lens: injection
+root_cause_category: shared-low
+suspect_files:
+  - src/shared-low.sh
+---
+
+## Summary
+Below-threshold shared finding.
+MD
+
+cat > "$round_dedupe_lens_outputs/003-unknown-severity.md" <<'MD'
+---
+title: "[URGENT] Shared filtered invalid"
+severity: urgent
+domain: security
+lens: injection
+root_cause_category: shared-invalid
+suspect_files:
+  - src/shared-invalid.sh
+---
+
+## Summary
+Invalid-severity shared finding.
+MD
+
+export PROJECT_PATH="$round_dedupe_project"
+export LOG_BASE="$round_dedupe_log_dir"
+export SUMMARY_FILE="$round_dedupe_summary"
+export AGENT=codex
+export MODE=bugreport
+export REPOLENS_MODE=bugreport
+export REPOLENS_MIN_SEVERITY=high
+
+init_logging "$round_dedupe_run_id" "$round_dedupe_log_dir"
+init_summary "$round_dedupe_summary" "$round_dedupe_run_id" "$round_dedupe_project" "bugreport" "$AGENT" "" "" "local" "$round_dedupe_output"
+
+round_dedupe_local_count="$(count_dry_run_issues "$round_dedupe_lens_outputs" 2>"$TMPDIR/round-dedupe-local.err")"
+round_dedupe_local_status=$?
+round_dedupe_after_local="$(jq -r '.totals.findings_filtered // "missing"' "$round_dedupe_summary" 2>/dev/null || true)"
+build_round_digest "$round_dedupe_dir" >"$TMPDIR/round-dedupe-digest.out" 2>"$TMPDIR/round-dedupe-digest.err"
+round_dedupe_digest_status=$?
+round_dedupe_after_digest="$(jq -r '.totals.findings_filtered // "missing"' "$round_dedupe_summary" 2>/dev/null || true)"
+
+unset REPOLENS_MIN_SEVERITY REPOLENS_MODE MODE LOG_BASE SUMMARY_FILE PROJECT_PATH AGENT
+
+assert_success "shared local markdown count succeeds" "$round_dedupe_local_status"
+assert_eq "shared local markdown count keeps only high finding" "1" "$round_dedupe_local_count"
+assert_eq "shared local markdown scan records two filtered findings" "2" "$round_dedupe_after_local"
+assert_success "shared round digest build succeeds" "$round_dedupe_digest_status"
+assert_eq "shared round digest build does not double-count filtered findings" "2" "$round_dedupe_after_digest"
 
 echo ""
 echo "=== local markdown missing attribution fallback ==="
