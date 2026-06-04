@@ -101,16 +101,66 @@ _streak_title_is_content_priority_proposal() {
   [[ "$title" =~ ^\[[Pp][0-3]\][[:space:]]* ]]
 }
 
+_streak_log_min_severity_info() {
+  local message="$1"
+  if declare -F log_info >/dev/null 2>&1 && [[ -n "${_REPOLENS_LOG_FILE:-}" ]]; then
+    log_info "$message" >/dev/null
+  fi
+}
+
+_streak_log_min_severity_warn() {
+  local message="$1"
+  if declare -F log_warn >/dev/null 2>&1 && [[ -n "${_REPOLENS_LOG_FILE:-}" ]]; then
+    log_warn "$message"
+  fi
+}
+
+_streak_local_filtered_state_file() {
+  [[ -n "${SUMMARY_FILE:-}" ]] || return 1
+  printf '%s/.local-min-severity-filtered' "$(dirname "$SUMMARY_FILE")"
+}
+
+_streak_record_local_filtered_locked() {
+  local state_file="$1" key="$2"
+
+  if [[ -f "$state_file" ]] && grep -Fxq -- "$key" "$state_file" 2>/dev/null; then
+    return 0
+  fi
+
+  increment_findings_filtered "$SUMMARY_FILE" 1 || return 1
+  printf '%s\n' "$key" >> "$state_file"
+}
+
+_streak_record_local_filtered() {
+  local file="$1" decision_type="$2" title="$3" severity="$4" state_file key
+
+  [[ -n "${SUMMARY_FILE:-}" && -f "${SUMMARY_FILE:-}" ]] || return 0
+  declare -F increment_findings_filtered >/dev/null 2>&1 || return 0
+
+  state_file="$(_streak_local_filtered_state_file)" || return 0
+  key="${decision_type}"$'\t'"${file}"$'\t'"${title}"$'\t'"${severity}"
+
+  if declare -F with_file_lock >/dev/null 2>&1; then
+    with_file_lock "${state_file}.lock" "${REPOLENS_SUMMARY_LOCK_TIMEOUT:-30}" \
+      _streak_record_local_filtered_locked "$state_file" "$key"
+  else
+    _streak_record_local_filtered_locked "$state_file" "$key"
+  fi
+}
+
 # count_dry_run_issues <dir>
 #   Counts .md files in a directory (maxdepth 1, no subdirectories).
 #   Returns count on stdout. Returns 0 if directory is empty or missing.
 count_dry_run_issues() {
-  local dir="$1" file raw_severity severity title count content_mode
+  local dir="$1" file raw_severity severity title count content_mode min_severity domain lens log_title
   [[ -d "$dir" ]] || { echo 0; return 0; }
   if [[ -z "${REPOLENS_MIN_SEVERITY:-}" ]]; then
     find "$dir" -maxdepth 1 -name '*.md' -type f 2>/dev/null | wc -l
     return 0
   fi
+
+  min_severity="$(severity_normalize "$REPOLENS_MIN_SEVERITY")"
+  [[ -n "$min_severity" ]] || { echo 0; return 0; }
 
   content_mode=0
   if _streak_content_mode_enabled; then
@@ -121,6 +171,11 @@ count_dry_run_issues() {
   while IFS= read -r file; do
     title="$(_streak_frontmatter_value title "$file")"
     raw_severity="$(_streak_frontmatter_value severity "$file")"
+    domain="$(_streak_frontmatter_value domain "$file")"
+    lens="$(_streak_frontmatter_value lens "$file")"
+    domain="${domain:-<unknown>}"
+    lens="${lens:-<unknown>}"
+    log_title="${title:-<untitled>}"
 
     if (( content_mode )) && _streak_title_is_content_priority_proposal "$title"; then
       count=$((count + 1))
@@ -129,17 +184,25 @@ count_dry_run_issues() {
 
     severity="$(severity_normalize "$raw_severity")"
     if [[ -n "$severity" ]]; then
-      if severity_meets_min "$severity" "$REPOLENS_MIN_SEVERITY"; then
+      if severity_meets_min "$severity" "$min_severity"; then
         count=$((count + 1))
+      else
+        _streak_log_min_severity_info "[$domain/$lens] Dropped finding \"$log_title\" (severity=$severity < min=$min_severity)"
+        _streak_record_local_filtered "$file" "below" "$log_title" "$severity"
       fi
       continue
     fi
 
+    _streak_log_min_severity_warn "[$domain/$lens] Finding \"$log_title\" has invalid severity: \"$raw_severity\" (expected critical, high, medium, or low) - skipping"
+    _streak_record_local_filtered "$file" "invalid" "$log_title" "$raw_severity"
+
     if (( content_mode )); then
-      if [[ -n "$raw_severity" ]]; then
-        warn "dry-run: dropping content audit finding with invalid severity ${raw_severity}: ${title:-<untitled>}"
-      else
-        warn "dry-run: dropping content audit finding with missing severity: ${title:-<untitled>}"
+      if [[ -z "${_REPOLENS_LOG_FILE:-}" ]]; then
+        if [[ -n "$raw_severity" ]]; then
+          warn "dry-run: dropping content audit finding with invalid severity ${raw_severity}: ${log_title}"
+        else
+          warn "dry-run: dropping content audit finding with missing severity: ${log_title}"
+        fi
       fi
     fi
   done < <(find "$dir" -maxdepth 1 -name '*.md' -type f -print 2>/dev/null)
