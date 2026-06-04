@@ -22,6 +22,8 @@ source "$SCRIPT_DIR/lib/core.sh"
 source "$SCRIPT_DIR/lib/template.sh"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/synthesize.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib/streak.sh"
 
 PASS=0
 FAIL=0
@@ -259,6 +261,109 @@ print_content_synthesizer_manifest_fixture() {
 JSON
 }
 
+write_content_local_markdown_fixture() {
+  local dir="$1"
+  mkdir -p "$dir"
+
+  cat > "$dir/001-critical.md" <<'EOF'
+---
+title: "[CRITICAL] Fix broken canonical links"
+severity: critical
+---
+# Critical audit body
+EOF
+
+  cat > "$dir/002-high.md" <<'EOF'
+---
+title: "[HIGH] Repair missing article outline"
+severity: high
+---
+# High audit body
+EOF
+
+  cat > "$dir/003-medium.md" <<'EOF'
+---
+title: "[MEDIUM] Clarify archive teaser copy"
+severity: medium
+---
+# Medium audit body
+EOF
+
+  cat > "$dir/004-low.md" <<'EOF'
+---
+title: "[LOW] Polish tag label casing"
+severity: low
+---
+# Low audit body
+EOF
+
+  cat > "$dir/005-p0.md" <<'EOF'
+---
+title: "[P0] Publish migration guide"
+---
+# P0 proposal body
+EOF
+
+  cat > "$dir/006-p1.md" <<'EOF'
+---
+title: "[P1] Add editorial calendar"
+severity: priority
+---
+# P1 proposal body
+EOF
+
+  cat > "$dir/007-p2.md" <<'EOF'
+---
+title: "[P2] Refresh onboarding examples"
+severity: low
+---
+# P2 proposal body
+EOF
+
+  cat > "$dir/008-p3.md" <<'EOF'
+---
+title: "[P3] Add glossary sidebar"
+severity: not-applicable
+---
+# P3 proposal body
+EOF
+
+  cat > "$dir/009-high-missing-severity.md" <<'EOF'
+---
+title: "[HIGH] Missing severity content audit"
+---
+# Missing severity audit body
+EOF
+
+  cat > "$dir/010-critical-invalid-severity.md" <<'EOF'
+---
+title: "[CRITICAL] Invalid severity content audit"
+severity: urgent
+---
+# Invalid severity audit body
+EOF
+}
+
+copy_content_local_markdown_subset() {
+  local source_dir="$1" dest_dir="$2" file
+  shift 2
+  mkdir -p "$dest_dir"
+  for file in "$@"; do
+    cp "$source_dir/$file" "$dest_dir/$file"
+  done
+}
+
+count_content_local_markdown_dir() {
+  local dir="$1" error_file="$2" status
+  export MODE=content
+  export REPOLENS_MODE=content
+  export REPOLENS_MIN_SEVERITY=high
+  count_dry_run_issues "$dir" 2>"$error_file"
+  status=$?
+  unset REPOLENS_MIN_SEVERITY MODE REPOLENS_MODE
+  return "$status"
+}
+
 echo "=== content min-severity split prompt fixture ==="
 
 base_file="$SCRIPT_DIR/prompts/_base/content.md"
@@ -422,6 +527,151 @@ assert_success "REPOLENS_MODE=content alone activates content min-severity filte
 assert_eq "REPOLENS_MODE=content alone preserves priority proposals" \
   "content-critical::kept,content-high::kept,proposal-p0::kept,proposal-p1::kept,proposal-p2::kept,proposal-p3::kept" \
   "$repolens_mode_only_ids"
+
+echo ""
+echo "=== content local markdown min-severity count fixture ==="
+
+content_local_md_dir="$TEST_TMPDIR/content-local-md"
+write_content_local_markdown_fixture "$content_local_md_dir"
+
+content_local_high_dir="$TEST_TMPDIR/content-local-md-high"
+copy_content_local_markdown_subset "$content_local_md_dir" "$content_local_high_dir" \
+  001-critical.md \
+  002-high.md
+content_local_high_count="$(count_content_local_markdown_dir "$content_local_high_dir" "$TEST_TMPDIR/content-local-high-count.err")"
+content_local_high_status=$?
+content_local_high_errors="$(cat "$TEST_TMPDIR/content-local-high-count.err")"
+
+assert_success "content local markdown high audit subset returns success" "$content_local_high_status"
+assert_eq "content local markdown high audit subset counts critical and high" \
+  "2" \
+  "$content_local_high_count"
+assert_eq "content local markdown high audit subset emits no warnings" \
+  "" \
+  "$content_local_high_errors"
+
+content_local_below_dir="$TEST_TMPDIR/content-local-md-below"
+copy_content_local_markdown_subset "$content_local_md_dir" "$content_local_below_dir" \
+  003-medium.md \
+  004-low.md
+content_local_below_count="$(count_content_local_markdown_dir "$content_local_below_dir" "$TEST_TMPDIR/content-local-below-count.err")"
+content_local_below_status=$?
+content_local_below_errors="$(cat "$TEST_TMPDIR/content-local-below-count.err")"
+
+assert_success "content local markdown below-threshold audit subset returns success" "$content_local_below_status"
+assert_eq "content local markdown below-threshold audit subset counts zero" \
+  "0" \
+  "$content_local_below_count"
+assert_eq "content local markdown below-threshold audit subset emits no warnings" \
+  "" \
+  "$content_local_below_errors"
+
+content_local_proposal_dir="$TEST_TMPDIR/content-local-md-proposals"
+copy_content_local_markdown_subset "$content_local_md_dir" "$content_local_proposal_dir" \
+  005-p0.md \
+  006-p1.md \
+  007-p2.md \
+  008-p3.md
+content_local_proposal_count="$(count_content_local_markdown_dir "$content_local_proposal_dir" "$TEST_TMPDIR/content-local-proposal-count.err")"
+content_local_proposal_status=$?
+content_local_proposal_errors="$(cat "$TEST_TMPDIR/content-local-proposal-count.err")"
+
+assert_success "content local markdown proposal subset returns success" "$content_local_proposal_status"
+assert_eq "content local markdown proposal subset keeps P0 through P3" \
+  "4" \
+  "$content_local_proposal_count"
+assert_eq "content local markdown proposal subset emits no warnings" \
+  "" \
+  "$content_local_proposal_errors"
+
+content_local_invalid_audit_dir="$TEST_TMPDIR/content-local-md-invalid-audits"
+copy_content_local_markdown_subset "$content_local_md_dir" "$content_local_invalid_audit_dir" \
+  009-high-missing-severity.md \
+  010-critical-invalid-severity.md
+content_local_invalid_audit_count="$(count_content_local_markdown_dir "$content_local_invalid_audit_dir" "$TEST_TMPDIR/content-local-invalid-audit-count.err")"
+content_local_invalid_audit_status=$?
+content_local_invalid_audit_errors="$(cat "$TEST_TMPDIR/content-local-invalid-audit-count.err")"
+
+assert_success "content local markdown invalid audit subset returns success" "$content_local_invalid_audit_status"
+assert_eq "content local markdown invalid audit subset counts zero" \
+  "0" \
+  "$content_local_invalid_audit_count"
+assert_matches "content local markdown invalid audit subset warns about missing severity" \
+  "(missing severity|invalid severity).*Missing severity content audit|Missing severity content audit.*(missing severity|invalid severity)" \
+  "$content_local_invalid_audit_errors"
+assert_matches "content local markdown invalid audit subset warns about invalid severity" \
+  "invalid severity.*Invalid severity content audit|Invalid severity content audit.*invalid severity" \
+  "$content_local_invalid_audit_errors"
+
+export MODE=content
+export REPOLENS_MODE=content
+export REPOLENS_MIN_SEVERITY=high
+local_count="$(count_dry_run_issues "$content_local_md_dir" 2>"$TEST_TMPDIR/content-local-count.err")"
+local_count_status=$?
+local_count_errors="$(cat "$TEST_TMPDIR/content-local-count.err")"
+unset REPOLENS_MIN_SEVERITY MODE REPOLENS_MODE
+
+assert_success "content local markdown count returns success" "$local_count_status"
+assert_eq "content local markdown mixed fixture aggregate remains expected" \
+  "6" \
+  "$local_count"
+assert_matches "content local markdown count warns about missing severity audit entries" \
+  "(missing severity|invalid severity).*Missing severity content audit|Missing severity content audit.*(missing severity|invalid severity)" \
+  "$local_count_errors"
+assert_matches "content local markdown count warns about invalid severity audit entries" \
+  "invalid severity.*Invalid severity content audit|Invalid severity content audit.*invalid severity" \
+  "$local_count_errors"
+assert_not_contains "content local markdown count does not warn about P0 missing severity proposal" \
+  "[P0] Publish migration guide" \
+  "$local_count_errors"
+assert_not_contains "content local markdown count does not warn about P1 non-severity proposal metadata" \
+  "[P1] Add editorial calendar" \
+  "$local_count_errors"
+assert_not_contains "content local markdown count does not warn about P2 below-threshold proposal metadata" \
+  "[P2] Refresh onboarding examples" \
+  "$local_count_errors"
+assert_not_contains "content local markdown count does not warn about P3 non-severity proposal metadata" \
+  "[P3] Add glossary sidebar" \
+  "$local_count_errors"
+
+export MODE=content
+unset REPOLENS_MODE
+export REPOLENS_MIN_SEVERITY=high
+mode_only_local_count="$(count_dry_run_issues "$content_local_md_dir" 2>"$TEST_TMPDIR/content-local-mode-only-count.err")"
+mode_only_local_count_status=$?
+unset REPOLENS_MIN_SEVERITY MODE REPOLENS_MODE
+
+assert_success "MODE=content alone activates local markdown content counting" "$mode_only_local_count_status"
+assert_eq "MODE=content alone keeps local priority proposals" \
+  "6" \
+  "$mode_only_local_count"
+
+unset MODE
+export REPOLENS_MODE=content
+export REPOLENS_MIN_SEVERITY=high
+repolens_mode_only_local_count="$(count_dry_run_issues "$content_local_md_dir" 2>"$TEST_TMPDIR/content-local-repolens-mode-only-count.err")"
+repolens_mode_only_local_count_status=$?
+unset REPOLENS_MIN_SEVERITY MODE REPOLENS_MODE
+
+assert_success "REPOLENS_MODE=content alone activates local markdown content counting" "$repolens_mode_only_local_count_status"
+assert_eq "REPOLENS_MODE=content alone keeps local priority proposals" \
+  "6" \
+  "$repolens_mode_only_local_count"
+
+unset MODE REPOLENS_MODE
+export REPOLENS_MIN_SEVERITY=high
+non_content_local_count="$(count_dry_run_issues "$content_local_md_dir" 2>"$TEST_TMPDIR/non-content-local-count.err")"
+non_content_local_count_status=$?
+non_content_local_errors="$(cat "$TEST_TMPDIR/non-content-local-count.err")"
+unset REPOLENS_MIN_SEVERITY MODE REPOLENS_MODE
+
+assert_success "non-content local markdown count returns success" "$non_content_local_count_status"
+assert_eq "non-content local markdown count still applies generic severity filtering" \
+  "2" \
+  "$non_content_local_count"
+assert_eq "non-content local markdown count does not emit content audit warnings" \
+  "" \
+  "$non_content_local_errors"
 
 export MODE=content
 export REPOLENS_MODE=content

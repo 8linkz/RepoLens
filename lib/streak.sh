@@ -70,34 +70,77 @@ count_issues_in_output() {
   grep -oE 'https://github\.com/[^/]+/[^/]+/issues/[0-9]+' "$file" 2>/dev/null | wc -l
 }
 
+_streak_frontmatter_value() {
+  local key="$1" file="$2" value
+  value="$(
+    awk -v key="$key" '
+      NR == 1 && $0 == "---" { in_fm = 1; next }
+      in_fm && $0 == "---" { exit }
+      in_fm && $0 ~ "^[[:space:]]*" key "[[:space:]]*:" {
+        print substr($0, index($0, ":") + 1)
+        exit
+      }
+    ' "$file"
+  )"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  value="${value#\"}"
+  value="${value%\"}"
+  value="${value#\'}"
+  value="${value%\'}"
+  printf '%s\n' "$value"
+}
+
+_streak_content_mode_enabled() {
+  local mode="${REPOLENS_MODE:-${MODE:-}}"
+  [[ "$mode" == "content" ]]
+}
+
+_streak_title_is_content_priority_proposal() {
+  local title="${1:-}"
+  [[ "$title" =~ ^\[[Pp][0-3]\][[:space:]]* ]]
+}
+
 # count_dry_run_issues <dir>
 #   Counts .md files in a directory (maxdepth 1, no subdirectories).
 #   Returns count on stdout. Returns 0 if directory is empty or missing.
 count_dry_run_issues() {
-  local dir="$1" file severity count
+  local dir="$1" file raw_severity severity title count content_mode
   [[ -d "$dir" ]] || { echo 0; return 0; }
   if [[ -z "${REPOLENS_MIN_SEVERITY:-}" ]]; then
     find "$dir" -maxdepth 1 -name '*.md' -type f 2>/dev/null | wc -l
     return 0
   fi
 
+  content_mode=0
+  if _streak_content_mode_enabled; then
+    content_mode=1
+  fi
+
   count=0
   while IFS= read -r file; do
-    severity="$(
-      awk '
-        NR == 1 && $0 == "---" { in_fm = 1; next }
-        in_fm && $0 == "---" { exit }
-        in_fm && $0 ~ /^[[:space:]]*severity[[:space:]]*:/ {
-          sub(/^[[:space:]]*severity[[:space:]]*:[[:space:]]*/, "")
-          gsub(/^["'\''[:space:]]+|["'\''[:space:]]+$/, "")
-          print
-          exit
-        }
-      ' "$file"
-    )"
-    severity="$(severity_normalize "$severity")"
-    if [[ -n "$severity" ]] && severity_meets_min "$severity" "$REPOLENS_MIN_SEVERITY"; then
+    title="$(_streak_frontmatter_value title "$file")"
+    raw_severity="$(_streak_frontmatter_value severity "$file")"
+
+    if (( content_mode )) && _streak_title_is_content_priority_proposal "$title"; then
       count=$((count + 1))
+      continue
+    fi
+
+    severity="$(severity_normalize "$raw_severity")"
+    if [[ -n "$severity" ]]; then
+      if severity_meets_min "$severity" "$REPOLENS_MIN_SEVERITY"; then
+        count=$((count + 1))
+      fi
+      continue
+    fi
+
+    if (( content_mode )); then
+      if [[ -n "$raw_severity" ]]; then
+        warn "dry-run: dropping content audit finding with invalid severity ${raw_severity}: ${title:-<untitled>}"
+      else
+        warn "dry-run: dropping content audit finding with missing severity: ${title:-<untitled>}"
+      fi
     fi
   done < <(find "$dir" -maxdepth 1 -name '*.md' -type f -print 2>/dev/null)
   echo "$count"
