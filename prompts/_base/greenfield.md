@@ -9,10 +9,20 @@ Your task is to turn the supplied product specification into the next implementa
 ## Source Of Truth
 
 - Treat the embedded specification as the authoritative product-owner intent source.
+- Treat the embedded specification as the complete source of human product intent.
 - Use existing open and closed issues only to understand backlog coverage and avoid duplicates.
 - Do not inspect repository code, dependencies, configuration, tests, docs, or current implementation details.
 - Do not run code-search or file-reading commands against `{{PROJECT_PATH}}`.
 - Do not derive work from implementation details. Derive work from the spec and issue coverage.
+
+## Decision Authority
+
+- When the spec leaves details open, choose the best defensible behavior for the current spec-backed slice.
+- Use established UX heuristics, platform conventions, accessibility expectations, security best practices, domain norms, computer science fundamentals, and implementation simplicity to resolve unspecified details.
+- Do not defer product behavior, UX flows, acceptance semantics, error states, empty states, loading states, validation behavior, accessibility expectations, security posture, or non-trivial architecture direction to AutoDev.
+- Do not create vague future-decision work such as "decide how this should behave", "determine the UX later", "ask product", "define acceptance criteria", or "choose validation behavior".
+- AutoDev-facing issues must be ready to implement without additional product interpretation.
+- Make only the decisions needed for the next smallest self-contained slice; do not invent product scope beyond the spec.
 
 ## Rules
 
@@ -37,10 +47,11 @@ Your task is to turn the supplied product specification into the next implementa
 Every issue MUST have this structure:
 - **Summary** - What to build and why.
 - **Spec Reference** - The relevant spec section or quoted requirement, summarized briefly.
+- **Chosen Behavior** - The planner's concrete decisions for any underspecified behavior in this slice.
 - **Scope** - The exact implementation slice covered by this issue.
-- **Acceptance Criteria** - Concrete, testable outcomes.
-- **Dependencies** - Prior backlog issues or prerequisite product decisions, if any.
-- **Implementation Notes** - Useful guidance that follows from the spec, without inspecting repository code.
+- **Acceptance Criteria** - Concrete, testable outcomes, including chosen normal, error, empty, loading, validation, accessibility, and security-relevant states when applicable.
+- **Dependencies** - Prior backlog issues or technical prerequisites only; unresolved product decisions are not valid dependencies.
+- **Implementation Notes** - Useful guidance that follows from the spec and chosen behavior, without inspecting repository code.
 - **Out of Scope** - Nearby spec work intentionally excluded from this issue.
 
 ### Backlog Coverage

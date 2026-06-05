@@ -313,6 +313,44 @@ if [[ -f "$GREENFIELD_BASE" && -f "$GREENFIELD_LENS" ]]; then
   assert_contains "rendered prompt reserves DONE for sufficient backlog coverage" "DONE" "$rendered"
   assert_contains "rendered prompt includes max-issues guidance" "at most 3 issue(s)" "$rendered"
   assert_contains "rendered prompt includes local output path" "Write all findings to: \`$TMPDIR/rendered-issues\`" "$rendered"
+  for term in \
+    "Decision Authority" \
+    "Decision-complete AutoDev handoff" \
+    "complete source of human product intent" \
+    "best defensible" \
+    "Do not defer" \
+    "AutoDev" \
+    "without additional product interpretation" \
+    "Chosen Behavior" \
+    "acceptance semantics" \
+    "error states" \
+    "empty states" \
+    "loading states" \
+    "validation behavior" \
+    "accessibility" \
+    "security" \
+    "security-relevant states" \
+    "architecture" \
+    "implementation-ordering decisions" \
+    "technical prerequisites only" \
+    "unresolved product decisions are not valid dependencies" \
+    "platform conventions" \
+    "domain norms" \
+    "computer science fundamentals" \
+    "implementation simplicity" \
+    "simplest defensible" \
+    "sequencing details"; do
+    assert_contains "rendered prompt has decision-complete handoff term: $term" "$term" "$rendered"
+  done
+  for forbidden_example in \
+    "decide how this should behave" \
+    "determine the UX later" \
+    "ask product" \
+    "define acceptance criteria" \
+    "choose validation behavior"; do
+    assert_contains "rendered prompt names forbidden future-decision work: $forbidden_example" "$forbidden_example" "$rendered"
+  done
+  assert_not_contains "rendered prompt does not allow product-decision dependencies" "prerequisite product decisions" "$rendered"
   assert_not_contains "rendered prompt has no generic lens DONE-after-created-issues rule" "After you have created all real GitHub issues" "$rendered"
 
   done_after_created_lines="$(
