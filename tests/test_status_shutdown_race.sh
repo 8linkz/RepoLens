@@ -162,6 +162,38 @@ write_status_snapshot \
 
 assert_jq "Running snapshot does not overwrite existing interrupted terminal state" "$STATUS_FILE" '.state == "interrupted"'
 
+write_status_snapshot \
+  "rate-limit-pending" \
+  "status-race" \
+  "$LOG_BASE" \
+  "$HEARTBEAT_DIR" \
+  "$COMPLETED_FILE" \
+  "$SUMMARY_FILE" \
+  "$STATUS_TEST_TMPDIR/project" \
+  "owner/repo" \
+  "audit" \
+  "codex" \
+  "true" \
+  "2" \
+  "$LENSES_FILE"
+
+write_status_snapshot \
+  "running" \
+  "status-race" \
+  "$LOG_BASE" \
+  "$HEARTBEAT_DIR" \
+  "$COMPLETED_FILE" \
+  "$SUMMARY_FILE" \
+  "$STATUS_TEST_TMPDIR/project" \
+  "owner/repo" \
+  "audit" \
+  "codex" \
+  "true" \
+  "2" \
+  "$LENSES_FILE"
+
+assert_jq "Running snapshot does not overwrite existing rate-limit-pending terminal state" "$STATUS_FILE" '.state == "rate-limit-pending"'
+
 REPOLENS_STATUS_ALLOW_RUNNING_OVER_TERMINAL=true write_status_snapshot \
   "running" \
   "status-race" \

@@ -1108,6 +1108,106 @@ _cleanup_all() {
 }
 trap _cleanup_all EXIT
 
+rate_limit_sleep_interrupt_marker() {
+  printf '%s\n' "${LOG_BASE:-}/.rate-limit-sleep-interrupt"
+}
+
+rate_limit_sleep_signal_name() {
+  case "$1" in
+    129) printf '%s\n' "SIGHUP" ;;
+    130) printf '%s\n' "SIGINT" ;;
+    143) printf '%s\n' "SIGTERM" ;;
+    *) return 1 ;;
+  esac
+}
+
+rate_limit_sleep_stopped_reason() {
+  case "$1" in
+    129) printf '%s\n' "interrupted-sighup" ;;
+    130) printf '%s\n' "interrupted-sigint" ;;
+    143) printf '%s\n' "interrupted-sigterm" ;;
+    *) return 1 ;;
+  esac
+}
+
+write_rate_limit_sleep_interrupt_marker() {
+  local exit_code="$1" signal_name="$2" stopped_reason="$3"
+  local marker tmp
+
+  [[ -n "${LOG_BASE:-}" ]] || return 0
+  marker="$(rate_limit_sleep_interrupt_marker)"
+  tmp="${marker}.tmp.${BASHPID}"
+  {
+    printf 'exit_code=%s\n' "$exit_code"
+    printf 'signal=%s\n' "$signal_name"
+    printf 'stopped_reason=%s\n' "$stopped_reason"
+    printf 'source=rate-limit-sleep\n'
+  } > "$tmp" && mv -f "$tmp" "$marker"
+  rm -f "$tmp" 2>/dev/null || true
+}
+
+rate_limit_abort_stopped_reason() {
+  [[ -n "${SUMMARY_FILE:-}" && -f "$SUMMARY_FILE" ]] || return 0
+  jq -r '.stopped_reason // empty' "$SUMMARY_FILE" 2>/dev/null || true
+}
+
+is_phase_rate_limit_stopped_reason() {
+  case "$1" in
+    rate-limited-*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+apply_rate_limit_abort_final_state() {
+  local marker key value exit_code="" stopped_reason="" existing_reason
+
+  marker="$(rate_limit_sleep_interrupt_marker)"
+  if [[ -f "$marker" ]]; then
+    while IFS='=' read -r key value || [[ -n "$key" ]]; do
+      case "$key" in
+        exit_code) exit_code="$value" ;;
+        stopped_reason) stopped_reason="$value" ;;
+      esac
+    done < "$marker"
+
+    case "$exit_code" in
+      129|130|143) ;;
+      *) exit_code=130 ;;
+    esac
+    case "$stopped_reason" in
+      interrupted-sighup|interrupted-sigint|interrupted-sigterm) ;;
+      *) stopped_reason="$(rate_limit_sleep_stopped_reason "$exit_code" 2>/dev/null || printf '%s\n' "interrupted-sigint")" ;;
+    esac
+
+    REPOLENS_FINAL_STATE="interrupted"
+    REPOLENS_INTERRUPT_EXIT_CODE="$exit_code"
+    set_stop_reason "$SUMMARY_FILE" "$stopped_reason"
+    return 0
+  fi
+
+  if [[ -f "$LOG_BASE/.rate-limit-abort" ]]; then
+    existing_reason="$(rate_limit_abort_stopped_reason)"
+    if is_phase_rate_limit_stopped_reason "$existing_reason"; then
+      REPOLENS_FINAL_STATE="failed"
+      return 0
+    fi
+
+    REPOLENS_FINAL_STATE="rate-limit-pending"
+    if [[ -z "$existing_reason" ]]; then
+      set_stop_reason "$SUMMARY_FILE" "rate-limited"
+    fi
+    return 0
+  fi
+
+  return 1
+}
+
+_handle_hangup() {
+  REPOLENS_FINAL_STATE="interrupted"
+  REPOLENS_INTERRUPT_EXIT_CODE=129
+  exit 129
+}
+
 _handle_interrupt() {
   REPOLENS_FINAL_STATE="interrupted"
   REPOLENS_INTERRUPT_EXIT_CODE=130
@@ -1120,6 +1220,7 @@ _handle_termination() {
   exit 143
 }
 
+trap _handle_hangup HUP
 trap _handle_interrupt INT
 trap _handle_termination TERM
 
@@ -1484,6 +1585,10 @@ if [[ -n "$RESUME_RUN_ID" && -f "$LOG_BASE/.agent-no-progress-abort" ]]; then
 fi
 if [[ -n "$RESUME_RUN_ID" && -f "$LOG_BASE/.rate-limit-abort" ]]; then
   rm -f "$LOG_BASE/.rate-limit-abort"
+  clear_stop_reason "$SUMMARY_FILE"
+fi
+if [[ -n "$RESUME_RUN_ID" && -f "$LOG_BASE/.rate-limit-sleep-interrupt" ]]; then
+  rm -f "$LOG_BASE/.rate-limit-sleep-interrupt" "$LOG_BASE/.rate-limit-sleep-interrupt.tmp."*
   clear_stop_reason "$SUMMARY_FILE"
 fi
 if [[ -n "$RESUME_RUN_ID" && -f "$LOG_BASE/.systemic-failure-abort" ]]; then
@@ -2804,14 +2909,27 @@ run_lens() {
                 log_warn "[$domain/$lens_id] Agent rate-limited. Resume at $resume_label (${sleep_seconds}s from now). Sleeping."
                 rate_limit_retry_attempted=true
                 rate_limit_sleep_seconds=$((rate_limit_sleep_seconds + sleep_seconds))
+                local sleep_rc sleep_signal sleep_stopped_reason
                 if env --help 2>&1 | grep -q -- '--default-signal'; then
-                  if ! env --default-signal=INT sleep "$sleep_seconds"; then
-                    log_warn "[$domain/$lens_id] Rate-limit sleep interrupted."
-                    exit 130
-                  fi
-                elif ! sleep "$sleep_seconds"; then
+                  env --default-signal=INT sleep "$sleep_seconds"
+                  sleep_rc=$?
+                else
+                  sleep "$sleep_seconds"
+                  sleep_rc=$?
+                fi
+
+                if (( sleep_rc != 0 )); then
                   log_warn "[$domain/$lens_id] Rate-limit sleep interrupted."
-                  exit 130
+                  : > "$LOG_BASE/.rate-limit-abort"
+                  if sleep_stopped_reason="$(rate_limit_sleep_stopped_reason "$sleep_rc" 2>/dev/null)"; then
+                    sleep_signal="$(rate_limit_sleep_signal_name "$sleep_rc" 2>/dev/null || printf '%s\n' "UNKNOWN")"
+                    write_rate_limit_sleep_interrupt_marker "$sleep_rc" "$sleep_signal" "$sleep_stopped_reason"
+                    exit "$sleep_rc"
+                  fi
+
+                  log_warn "[$domain/$lens_id] Rate-limit sleep failed with exit $sleep_rc; leaving run pending for resume."
+                  exit_status="rate-limited"
+                  break
                 fi
                 continue
               fi
@@ -3119,12 +3237,13 @@ if declare -p _FORGE_WARN_SEEN >/dev/null 2>&1 && (( ${#_FORGE_WARN_SEEN[@]} > 0
 fi
 
 finalize_summary "$SUMMARY_FILE"
+apply_rate_limit_abort_final_state || true
 set_summary_health "$SUMMARY_FILE" "$REPOLENS_DEGENERATE_THRESHOLD"
 RUN_HEALTH="$(jq -r '.health // "ok"' "$SUMMARY_FILE" 2>/dev/null || printf 'ok')"
 
 case "$RUN_HEALTH" in
   broken)
-    if [[ "${REPOLENS_FINAL_STATE:-finished}" != "interrupted" ]]; then
+    if [[ "${REPOLENS_FINAL_STATE:-finished}" == "finished" ]]; then
       REPOLENS_FINAL_STATE="failed"
     fi
     read -r HEALTH_MAX_ITERATIONS HEALTH_RUN_LENSES HEALTH_ISSUES < <(
@@ -3141,7 +3260,7 @@ case "$RUN_HEALTH" in
     log_error "Run health: BROKEN - ${HEALTH_MAX_ITERATIONS:-0}/${HEALTH_RUN_LENSES:-0} run lenses reached max-iterations with ${HEALTH_ISSUES:-0} findings"
     ;;
   no-findings|empty)
-    if [[ "${REPOLENS_FINAL_STATE:-finished}" != "interrupted" ]]; then
+    if [[ "${REPOLENS_FINAL_STATE:-finished}" == "finished" ]]; then
       REPOLENS_FINAL_STATE="finished-empty"
     fi
     ;;
@@ -3162,20 +3281,23 @@ echo ""
 echo "=== RepoLens Run Summary ==="
 jq '.' "$SUMMARY_FILE"
 
-# If the rate-limit detector fired, exit non-zero so CI / operators see the
-# run as failed. The summary is already finalized with stopped_reason and
-# per-lens statuses, so --resume picks up seamlessly.
-if [[ -f "$LOG_BASE/.rate-limit-abort" || -f "$LOG_BASE/.agent-no-progress-abort" \
-    || -f "$LOG_BASE/.systemic-failure-abort" ]]; then
+if [[ "${REPOLENS_FINAL_STATE:-finished}" == "interrupted" ]]; then
+  exit "${REPOLENS_INTERRUPT_EXIT_CODE:-130}"
+fi
+
+if [[ -f "$LOG_BASE/.rate-limit-abort" ]]; then
+  if is_phase_rate_limit_stopped_reason "$(rate_limit_abort_stopped_reason)"; then
+    exit 1
+  fi
+  exit 3
+fi
+
+if [[ -f "$LOG_BASE/.agent-no-progress-abort" || -f "$LOG_BASE/.systemic-failure-abort" ]]; then
   exit 1
 fi
 
 if [[ "$RUN_ROUNDS_RC" -ne 0 ]]; then
   exit "$RUN_ROUNDS_RC"
-fi
-
-if [[ "${REPOLENS_FINAL_STATE:-finished}" == "interrupted" ]]; then
-  exit "${REPOLENS_INTERRUPT_EXIT_CODE:-130}"
 fi
 
 if [[ "$RUN_HEALTH" == "broken" && "${REPOLENS_ALLOW_DEGENERATE:-false}" != "true" ]]; then

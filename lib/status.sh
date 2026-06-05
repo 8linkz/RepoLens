@@ -163,7 +163,7 @@ _write_status_snapshot_locked() {
 
   if [[ "$state" == "running" && -f "$status_file" && "${REPOLENS_STATUS_ALLOW_RUNNING_OVER_TERMINAL:-false}" != "true" ]]; then
     case "$(jq -r '.state // empty' "$status_file" 2>/dev/null || true)" in
-      finished|finished-empty|failed|interrupted)
+      finished|finished-empty|failed|interrupted|rate-limit-pending)
         return 0
         ;;
     esac

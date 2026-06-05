@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Fixed
 
 - `config/agent-pricing.json` refreshed to current Anthropic pricing (2026-05-24): corrected `claude-opus-4-6` from $15/$75 to $5/$25 per MTok, added `claude-sonnet-4-6` ($3/$15) and `claude-opus-4-7` ($5/$25), and updated the default model for `--agent claude` from `claude-sonnet-4-5` to `claude-sonnet-4-6`. Cost estimates shown by `--dry-run` and the confirmation prompt are now within ±10% of current published pricing ([#249](https://github.com/TheMorpheus407/RepoLens/issues/249))
+- Parallel rate-limit aborts now preserve operator-visible terminal state: lens-level provider quota aborts finish as `status.json.state: "rate-limit-pending"` with CLI exit `3`, while SIGHUP, SIGINT, or SIGTERM during a rate-limit retry sleep finish as `interrupted` with the corresponding stopped reason and exit code `129`, `130`, or `143` ([#276](https://github.com/TheMorpheus407/RepoLens/issues/276))
 
 ### Added
 
