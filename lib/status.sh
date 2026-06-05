@@ -23,6 +23,30 @@ STATUS_UPDATER_PGID=""
 STATUS_LENSES_FILE=""
 # shellcheck disable=SC2034 # Shared with repolens.sh after this file is sourced.
 REPOLENS_FINAL_STATE="finished"
+# shellcheck disable=SC2034 # Shared with repolens.sh after this file is sourced.
+REPOLENS_STOP_REASON=""
+
+set_final_state() {
+  local state="${1:-}" reason="${2:-}"
+
+  case "$state" in
+    finished|finished-empty|failed|rate-limit-pending|interrupted) ;;
+    *) return 2 ;;
+  esac
+
+  # shellcheck disable=SC2034 # Shared with callers after this file is sourced.
+  REPOLENS_FINAL_STATE="$state"
+  if (($# >= 2)); then
+    # shellcheck disable=SC2034 # Shared with callers after this file is sourced.
+    REPOLENS_STOP_REASON="$reason"
+  fi
+
+  [[ -n "$reason" ]] || return 0
+  [[ -n "${SUMMARY_FILE:-}" && -f "${SUMMARY_FILE:-}" ]] || return 0
+  declare -F set_stop_reason >/dev/null 2>&1 || return 0
+
+  set_stop_reason "$SUMMARY_FILE" "$reason" || true
+}
 
 _STATUS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
