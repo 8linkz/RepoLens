@@ -10,7 +10,7 @@ Your task is to turn the supplied product specification into the next implementa
 
 - Treat the embedded specification as the authoritative product-owner intent source.
 - Treat the embedded specification as the complete source of human product intent.
-- Use existing open and closed issues only to understand backlog coverage and avoid duplicates.
+- Use the embedded current backlog snapshot to understand backlog coverage and avoid duplicates.
 - Do not inspect repository code, dependencies, configuration, tests, docs, or current implementation details.
 - Do not run code-search or file-reading commands against `{{PROJECT_PATH}}`.
 - Do not derive work from implementation details. Derive work from the spec and issue coverage.
@@ -55,10 +55,14 @@ Every issue MUST have this structure:
 - **Out of Scope** - Nearby spec work intentionally excluded from this issue.
 
 ### Backlog Coverage
-- Before creating an issue, check existing OPEN issues: `{{FORGE_ISSUE_LIST_OPEN}}`
-- Also check CLOSED issues: `{{FORGE_ISSUE_LIST_CLOSED}}`
+- Before creating an issue, review the Current Backlog Snapshot below. In forge mode it contains the currently open issue backlog. In local mode it contains the current draft backlog files.
+- Treat the snapshot as the authoritative current backlog state for this planning iteration.
+- In forge mode, you may verify open issues directly if needed: `{{FORGE_ISSUE_LIST_OPEN}}`
+- Closed issues are historical context only and are not the current planned backlog. You may inspect them if needed: `{{FORGE_ISSUE_LIST_CLOSED}}`
 - If an existing issue substantially covers the next spec-backed slice, skip it and look for the next uncovered slice.
 - If the existing backlog already covers the spec sufficiently, create no issue and output **DONE** as the very first word of your response AND **DONE** as the very last word.
+
+{{CURRENT_BACKLOG_SECTION}}
 
 {{SOURCE_SECTION}}
 

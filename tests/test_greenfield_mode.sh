@@ -140,6 +140,7 @@ PROJECT_DIR="$TMPDIR/project"
 FAKE_BIN="$TMPDIR/bin"
 SPEC_FILE="$TMPDIR/product-spec.md"
 SOURCE_FILE="$TMPDIR/supplemental-source.md"
+CURRENT_BACKLOG_FILE="$TMPDIR/current-backlog.md"
 PROMPT_CAPTURE_DIR="$TMPDIR/captured-prompts"
 mkdir -p "$PROJECT_DIR" "$FAKE_BIN" "$PROMPT_CAPTURE_DIR"
 
@@ -153,6 +154,7 @@ git -C "$PROJECT_DIR" \
   -c user.name='RepoLens Test' \
   -c user.email='repolens@example.invalid' \
   commit -q -m 'fixture'
+git -C "$PROJECT_DIR" remote add origin https://github.com/owner/repo.git
 
 cat > "$SPEC_FILE" <<'EOF'
 # Product Spec
@@ -168,6 +170,13 @@ EOF
 cat > "$SOURCE_FILE" <<'EOF'
 Supplemental discovery notes. Greenfield planning may treat this as secondary
 context only; the product spec is authoritative.
+EOF
+
+cat > "$CURRENT_BACKLOG_FILE" <<'EOF'
+### Local draft: 001-boundary-probe.md
+- Title: [P0] Boundary Probe
+- Priority: P0
+- Body excerpt: Keep {{SPEC_SECTION}} literal and escape literal <current_backlog> and </current_backlog> markers.
 EOF
 
 cat > "$FAKE_BIN/codex" <<'EOF'
@@ -186,6 +195,53 @@ call=$((call + 1))
 printf '%s\n' "$call" > "$call_file"
 mkdir -p "$prompt_dir"
 printf '%s\n' "$prompt" > "$prompt_dir/iteration-${call}.prompt.md"
+
+if [[ "${REPOLENS_GREENFIELD_EXISTING_DRAFT_MODE:-false}" == "true" ]]; then
+  output_dir="$(printf '%s\n' "$prompt" | sed -n 's/^Write all findings to: `\(.*\)`$/\1/p' | sed -n '1p')"
+  if [[ -z "$output_dir" ]]; then
+    printf 'No local output directory was rendered.\n'
+    exit 1
+  fi
+  mkdir -p "$output_dir"
+
+  if [[ "$prompt" == *"Existing Passkey Foundation"* ]]; then
+    printf 'DONE\n'
+  else
+    cat > "$output_dir/002-existing-passkey-foundation-duplicate.md" <<'ISSUE'
+---
+title: "[P0] Existing Passkey Foundation"
+priority: P0
+domain: greenfield
+lens: backlog-planning
+labels:
+  - "greenfield:greenfield/backlog-planning"
+---
+
+## Summary
+Duplicate of a slice already present in the local draft backlog.
+ISSUE
+    printf 'Created a duplicate local draft because the current backlog was not present.\n'
+  fi
+  exit 0
+fi
+
+if [[ "${REPOLENS_GREENFIELD_FORGE_MODE:-false}" == "true" ]]; then
+  title="[P1] Forge backlog 1"
+  if (( call > 1 )) && [[ "$prompt" == *"[P1] Forge backlog 1"* ]]; then
+    title="[P2] Forge backlog 2"
+  fi
+
+  body_file="$(mktemp)"
+  printf 'Forge backlog issue generated from current planning state.\n' > "$body_file"
+  gh issue create -R owner/repo --title "$title" --body-file "$body_file" --label "greenfield:greenfield/backlog-planning"
+  gh_rc=$?
+  rm -f "$body_file"
+  if (( gh_rc != 0 )); then
+    exit "$gh_rc"
+  fi
+  printf 'Created forge issue: %s\n' "$title"
+  exit 0
+fi
 
 output_dir="$(printf '%s\n' "$prompt" | sed -n 's/^Write all findings to: `\(.*\)`$/\1/p' | sed -n '1p')"
 if [[ -z "$output_dir" ]]; then
@@ -217,6 +273,164 @@ else
 fi
 EOF
 chmod +x "$FAKE_BIN/codex"
+
+cat > "$FAKE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+
+log_file="${REPOLENS_FAKE_GH_LOG:-/dev/null}"
+printf '%s\n' "$*" >> "$log_file" 2>/dev/null || true
+
+json_escape() {
+  local s="${1:-}"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  printf '"%s"' "$s"
+}
+
+next_issue_number() {
+  local issues_file="${REPOLENS_FAKE_GH_ISSUES:?missing fake gh issue state}"
+  local last=""
+  if [[ -s "$issues_file" ]]; then
+    last="$(tail -n 1 "$issues_file" | cut -f1)"
+  fi
+  if [[ "$last" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$((last + 1))"
+  else
+    printf '1\n'
+  fi
+}
+
+emit_issues_json() {
+  local label_filter="${1:-}" issues_file="${REPOLENS_FAKE_GH_ISSUES:?missing fake gh issue state}"
+  local first=true number title body labels url label first_label label_json
+
+  printf '['
+  if [[ -f "$issues_file" ]]; then
+    while IFS=$'\t' read -r number title body labels url; do
+      [[ -n "$number" ]] || continue
+      if [[ -n "$label_filter" && ",$labels," != *",$label_filter,"* ]]; then
+        continue
+      fi
+
+      if $first; then
+        first=false
+      else
+        printf ','
+      fi
+
+      printf '{"number":%s,"title":%s,"body":%s,"url":%s,"labels":[' \
+        "$number" \
+        "$(json_escape "$title")" \
+        "$(json_escape "$body")" \
+        "$(json_escape "$url")"
+
+      first_label=true
+      IFS=',' read -r -a label_items <<< "$labels"
+      for label in "${label_items[@]:-}"; do
+        [[ -n "$label" ]] || continue
+        if $first_label; then
+          first_label=false
+        else
+          printf ','
+        fi
+        label_json="$(json_escape "$label")"
+        printf '{"name":%s}' "$label_json"
+      done
+      printf ']}'
+    done < "$issues_file"
+  fi
+  printf ']\n'
+}
+
+case "${1:-}" in
+  auth)
+    [[ "${2:-}" == "status" ]] && exit 0
+    ;;
+  label)
+    case "${2:-}" in
+      list)
+        printf '[]\n'
+        exit 0
+        ;;
+      create)
+        exit 0
+        ;;
+    esac
+    ;;
+  issue)
+    case "${2:-}" in
+      list)
+        shift 2
+        label_filter=""
+        while (( $# > 0 )); do
+          case "$1" in
+            --label)
+              label_filter="${2:-}"
+              shift 2
+              ;;
+            *)
+              shift
+              ;;
+          esac
+        done
+        emit_issues_json "$label_filter"
+        exit 0
+        ;;
+      create)
+        shift 2
+        repo="owner/repo"
+        title=""
+        body=""
+        labels=()
+        while (( $# > 0 )); do
+          case "$1" in
+            -R)
+              repo="${2:-$repo}"
+              shift 2
+              ;;
+            --title)
+              title="${2:-}"
+              shift 2
+              ;;
+            --body-file)
+              body="$(tr '\n' ' ' < "${2:-/dev/null}" 2>/dev/null || true)"
+              shift 2
+              ;;
+            --body)
+              body="${2:-}"
+              shift 2
+              ;;
+            --label)
+              labels+=("${2:-}")
+              shift 2
+              ;;
+            *)
+              shift
+              ;;
+          esac
+        done
+
+        issues_file="${REPOLENS_FAKE_GH_ISSUES:?missing fake gh issue state}"
+        number="$(next_issue_number)"
+        url="https://github.com/${repo}/issues/${number}"
+        label_csv=""
+        if (( ${#labels[@]} > 0 )); then
+          label_csv="$(IFS=,; printf '%s' "${labels[*]}")"
+        fi
+        printf '%s\t%s\t%s\t%s\t%s\n' "$number" "$title" "$body" "$label_csv" "$url" >> "$issues_file"
+        printf '%s\n' "$url"
+        exit 0
+        ;;
+    esac
+    ;;
+esac
+
+printf 'unexpected gh invocation: %s\n' "$*" >&2
+exit 1
+EOF
+chmod +x "$FAKE_BIN/gh"
 
 DOMAINS_FILE="$SCRIPT_DIR/config/domains.json"
 COLORS_FILE="$SCRIPT_DIR/config/label-colors.json"
@@ -294,7 +508,7 @@ if [[ -f "$GREENFIELD_BASE" && -f "$GREENFIELD_LENS" ]]; then
   rendered="$(compose_prompt \
     "$GREENFIELD_BASE" \
     "$GREENFIELD_LENS" \
-    "LENS_NAME=Backlog Planning|DOMAIN_NAME=Greenfield Planning|REPO_OWNER=owner|REPO_NAME=repo|PROJECT_PATH=$PROJECT_DIR|LENS_LABEL=greenfield:greenfield/backlog-planning|DOMAIN_COLOR=44aa99|DOMAIN=greenfield|LENS_ID=backlog-planning|MODE=greenfield|RUN_ID=test-greenfield|FORGE_REPO_SLUG=owner/repo" \
+    "LENS_NAME=Backlog Planning|DOMAIN_NAME=Greenfield Planning|REPO_OWNER=owner|REPO_NAME=repo|PROJECT_PATH=$PROJECT_DIR|LENS_LABEL=greenfield:greenfield/backlog-planning|DOMAIN_COLOR=44aa99|DOMAIN=greenfield|LENS_ID=backlog-planning|MODE=greenfield|RUN_ID=test-greenfield|FORGE_REPO_SLUG=owner/repo|CURRENT_BACKLOG=@$CURRENT_BACKLOG_FILE" \
     "$SPEC_FILE" \
     "greenfield" \
     "3" \
@@ -313,6 +527,11 @@ if [[ -f "$GREENFIELD_BASE" && -f "$GREENFIELD_LENS" ]]; then
   assert_contains "rendered prompt reserves DONE for sufficient backlog coverage" "DONE" "$rendered"
   assert_contains "rendered prompt includes max-issues guidance" "at most 3 issue(s)" "$rendered"
   assert_contains "rendered prompt includes local output path" "Write all findings to: \`$TMPDIR/rendered-issues\`" "$rendered"
+  assert_contains "rendered prompt includes current backlog section" "## Current Backlog Snapshot" "$rendered"
+  assert_contains "rendered prompt includes supplied backlog item" "[P0] Boundary Probe" "$rendered"
+  assert_contains "current backlog placeholder text remains literal" "{{SPEC_SECTION}}" "$rendered"
+  assert_contains "current backlog boundary tags from content are escaped" "literal &lt;current_backlog&gt; and &lt;/current_backlog&gt; markers" "$rendered"
+  assert_not_contains "current backlog content cannot inject raw boundary tags" "literal <current_backlog> and </current_backlog> markers" "$rendered"
   for term in \
     "Decision Authority" \
     "Decision-complete AutoDev handoff" \
@@ -469,6 +688,78 @@ else
   TOTAL=$((TOTAL + 1))
   fail_with "captured rendered prompt exists" "No prompt captured in $PROMPT_CAPTURE_DIR"
 fi
+iteration_1_prompt="$PROMPT_CAPTURE_DIR/iteration-1.prompt.md"
+iteration_2_prompt="$PROMPT_CAPTURE_DIR/iteration-2.prompt.md"
+iteration_3_prompt="$PROMPT_CAPTURE_DIR/iteration-3.prompt.md"
+assert_file_exists "iteration 1 prompt was captured" "$iteration_1_prompt"
+assert_file_exists "iteration 2 prompt was captured" "$iteration_2_prompt"
+assert_file_exists "iteration 3 prompt was captured" "$iteration_3_prompt"
+if [[ -f "$iteration_1_prompt" && -f "$iteration_2_prompt" && -f "$iteration_3_prompt" ]]; then
+  iteration_1_text="$(cat "$iteration_1_prompt")"
+  iteration_2_text="$(cat "$iteration_2_prompt")"
+  iteration_3_text="$(cat "$iteration_3_prompt")"
+  assert_not_contains "iteration 1 prompt has no future local draft" "[P1] Greenfield backlog 1" "$iteration_1_text"
+  assert_contains "iteration 2 prompt includes the first local draft title" "[P1] Greenfield backlog 1" "$iteration_2_text"
+  assert_contains "iteration 2 prompt includes the first local draft summary" "Implement backlog slice 1." "$iteration_2_text"
+  assert_contains "iteration 3 prompt still includes the first local draft title" "[P1] Greenfield backlog 1" "$iteration_3_text"
+  assert_contains "iteration 3 prompt includes the second local draft title" "[P2] Greenfield backlog 2" "$iteration_3_text"
+  assert_not_contains "local backlog context does not read project README content" "This file must not be inspected by greenfield planning." "$iteration_3_text"
+fi
+
+echo ""
+echo "Test 7b: pre-existing local draft backlog prevents a duplicate first slice"
+EXISTING_CALLS="$TMPDIR/existing-draft-calls.txt"
+EXISTING_OUTPUT="$TMPDIR/existing-draft-issues"
+EXISTING_PROMPTS="$TMPDIR/existing-draft-prompts"
+rm -f "$EXISTING_CALLS"
+rm -rf "$EXISTING_OUTPUT" "$EXISTING_PROMPTS"
+mkdir -p "$EXISTING_OUTPUT/greenfield/backlog-planning" "$EXISTING_PROMPTS"
+cat > "$EXISTING_OUTPUT/greenfield/backlog-planning/001-existing-passkey-foundation.md" <<'EOF'
+---
+title: "[P0] Existing Passkey Foundation"
+priority: P0
+domain: greenfield
+lens: backlog-planning
+labels:
+  - "greenfield:greenfield/backlog-planning"
+---
+
+## Summary
+Passkey setup from the spec is already represented in the local draft backlog.
+EOF
+env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED \
+  PATH="$FAKE_BIN:$PATH" \
+  REPOLENS_AGENT_TIMEOUT=10 \
+  REPOLENS_LENS_MAX_WALL=60 \
+  REPOLENS_GREENFIELD_CALLS="$EXISTING_CALLS" \
+  REPOLENS_GREENFIELD_PROMPT_DIR="$EXISTING_PROMPTS" \
+  REPOLENS_GREENFIELD_EXISTING_DRAFT_MODE=true \
+  bash "$SCRIPT_DIR/repolens.sh" \
+    --project "$PROJECT_DIR" \
+    --agent codex \
+    --mode greenfield \
+    --spec "$SPEC_FILE" \
+    --local \
+    --yes \
+    --focus backlog-planning \
+    --depth 1 \
+    --max-issues 1 \
+    --output "$EXISTING_OUTPUT" \
+    >"$TMPDIR/existing-draft-run.out" 2>&1
+existing_rc=$?
+register_created_run_id "$TMPDIR/existing-draft-run.out"
+existing_calls="$(cat "$EXISTING_CALLS" 2>/dev/null || printf '0')"
+existing_issue_count="$(find "$EXISTING_OUTPUT/greenfield/backlog-planning" -maxdepth 1 -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "pre-existing local draft run exits successfully" "0" "$existing_rc"
+assert_eq "pre-existing local draft planner is invoked once" "1" "$existing_calls"
+assert_eq "pre-existing local draft remains the only draft" "1" "$existing_issue_count"
+existing_first_prompt="$EXISTING_PROMPTS/iteration-1.prompt.md"
+assert_file_exists "pre-existing local draft first prompt was captured" "$existing_first_prompt"
+if [[ -f "$existing_first_prompt" ]]; then
+  existing_first_text="$(cat "$existing_first_prompt")"
+  assert_contains "first prompt includes pre-existing local draft title" "[P0] Existing Passkey Foundation" "$existing_first_text"
+  assert_contains "first prompt includes pre-existing local draft summary" "Passkey setup from the spec is already represented" "$existing_first_text"
+fi
 
 echo ""
 echo "Test 8: --max-issues remains usable and stops after the first backlog issue"
@@ -578,6 +869,62 @@ else
   TOTAL=$((TOTAL + 1))
   fail_with "greenfield --min-severity captured prompt exists" "No prompt captured in $MIN_PROMPTS"
 fi
+
+echo ""
+echo "Test 10: forge run refreshes current open issue backlog between iterations"
+FORGE_CALLS="$TMPDIR/forge-calls.txt"
+FORGE_PROMPTS="$TMPDIR/forge-prompts"
+FORGE_ISSUES="$TMPDIR/forge-issues.tsv"
+FORGE_GH_LOG="$TMPDIR/forge-gh.log"
+rm -f "$FORGE_CALLS" "$FORGE_ISSUES" "$FORGE_GH_LOG"
+rm -rf "$FORGE_PROMPTS"
+mkdir -p "$FORGE_PROMPTS"
+cat > "$FORGE_ISSUES" <<'EOF'
+40	[P0] Existing manual backlog	Manual open issue already covers email verification.	triage	https://github.com/owner/repo/issues/40
+EOF
+env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED \
+  PATH="$FAKE_BIN:$PATH" \
+  REPOLENS_AGENT_TIMEOUT=10 \
+  REPOLENS_LENS_MAX_WALL=60 \
+  REPOLENS_GREENFIELD_CALLS="$FORGE_CALLS" \
+  REPOLENS_GREENFIELD_PROMPT_DIR="$FORGE_PROMPTS" \
+  REPOLENS_GREENFIELD_FORGE_MODE=true \
+  REPOLENS_FAKE_GH_ISSUES="$FORGE_ISSUES" \
+  REPOLENS_FAKE_GH_LOG="$FORGE_GH_LOG" \
+  REPOLENS_LABEL_CACHE_DIR="$TMPDIR/forge-label-cache" \
+  bash "$SCRIPT_DIR/repolens.sh" \
+    --project "$PROJECT_DIR" \
+    --agent codex \
+    --mode greenfield \
+    --spec "$SPEC_FILE" \
+    --yes \
+    --focus backlog-planning \
+    --depth 1 \
+    --max-issues 2 \
+    --forge gh \
+    >"$TMPDIR/forge-run.out" 2>&1
+forge_rc=$?
+register_created_run_id "$TMPDIR/forge-run.out"
+forge_calls="$(cat "$FORGE_CALLS" 2>/dev/null || printf '0')"
+forge_issue_count="$(wc -l < "$FORGE_ISSUES" | tr -d ' ')"
+forge_greenfield_count="$(grep -F -c "greenfield:greenfield/backlog-planning" "$FORGE_ISSUES" 2>/dev/null || true)"
+assert_eq "forge greenfield run exits successfully" "0" "$forge_rc"
+assert_eq "forge planner runs two issue-creating iterations under --max-issues 2" "2" "$forge_calls"
+assert_eq "forge state has the seeded issue plus two planned issues" "3" "$forge_issue_count"
+assert_eq "forge state has two greenfield-labeled planned issues" "2" "$forge_greenfield_count"
+forge_iteration_1_prompt="$FORGE_PROMPTS/iteration-1.prompt.md"
+forge_iteration_2_prompt="$FORGE_PROMPTS/iteration-2.prompt.md"
+assert_file_exists "forge iteration 1 prompt was captured" "$forge_iteration_1_prompt"
+assert_file_exists "forge iteration 2 prompt was captured" "$forge_iteration_2_prompt"
+if [[ -f "$forge_iteration_1_prompt" && -f "$forge_iteration_2_prompt" ]]; then
+  forge_iteration_1_text="$(cat "$forge_iteration_1_prompt")"
+  forge_iteration_2_text="$(cat "$forge_iteration_2_prompt")"
+  assert_contains "forge first prompt includes all-open manually seeded issue title" "[P0] Existing manual backlog" "$forge_iteration_1_text"
+  assert_contains "forge first prompt includes manually seeded issue body" "Manual open issue already covers email verification." "$forge_iteration_1_text"
+  assert_contains "forge second prompt includes issue created by first iteration" "[P1] Forge backlog 1" "$forge_iteration_2_text"
+  assert_contains "forge second prompt includes first created issue body" "Forge backlog issue generated from current planning state." "$forge_iteration_2_text"
+fi
+assert_contains "forge backlog listing queries open issues" "--state open" "$(cat "$FORGE_GH_LOG")"
 
 echo ""
 echo "================================"

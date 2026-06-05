@@ -169,6 +169,7 @@ Under the hood, RepoLens spawns AI agents (claude, codex, etc.) with shell acces
 
 - **Prompt injection is trivial.** A README, code comment, commit message, or docstring in the scanned repo can instruct the agent to do arbitrary things.
 - **`--spec` files from untrusted sources are dangerous.** Spec content is embedded in the agent prompt. While RepoLens sanitizes known tag-breakout vectors (e.g., `</spec>` injection), a malicious spec file can still influence agent behavior through indirect prompt injection. Only use `--spec` with files you wrote or trust completely.
+- **Greenfield backlog text is prompt input.** In `--mode greenfield`, current open issue bodies or local draft markdown files may be shown to the planner so it can avoid duplicate backlog items. Treat issue text and draft files as untrusted content that can influence planning.
 - **Scripts in the scanned repo can execute.** A hostile `docker-compose.yml`, `Makefile`, `package.json` postinstall hook, or shell script could be invoked by the agent while investigating.
 - **Deploy mode runs live shell commands** against whatever host you point it at — see also [Legal → Deploy Mode](#deploy-mode--authorization-required) for the authorization requirements.
 
@@ -212,7 +213,7 @@ RepoLens supports 10 modes. Each mode controls which domains/lenses are visible 
 | `custom`     | 1×          | 27 code/toolgate/logs domains (248 lenses) | Change impact analysis — identifies what needs adapting after a change        |
 | `opensource` | 1×          | `open-source-readiness` domain (13 lenses) | Open-source readiness — checks if a repo can go public safely                 |
 | `content`    | 1×          | `content-quality` domain (17 lenses)       | Content audit & creation — audits or creates content from `--source` material |
-| `greenfield` | 1×          | `greenfield` domain (1 lenses)             | Spec-to-backlog planning — requires `--spec`, creates one `[P0]`-`[P3]` implementation issue per invocation without inspecting repository code |
+| `greenfield` | 1×          | `greenfield` domain (1 lenses)             | Spec-to-backlog planning — requires `--spec`, checks the current open issue or local draft backlog, and creates non-duplicate `[P0]`-`[P3]` implementation issues without inspecting repository code |
 
 ### Mode Examples
 
@@ -281,6 +282,12 @@ RepoLens supports 10 modes. Each mode controls which domains/lenses are visible 
 # Dry run — preview which lenses would run without executing anything
 ./repolens.sh --project ~/my-app --agent claude --mode deploy --dry-run
 ```
+
+## Greenfield planning
+
+Greenfield mode plans backlog from `--spec` rather than repository code. Before every planning iteration, RepoLens refreshes the current backlog snapshot: forge runs read all currently open issues, and `--local` runs read the existing draft markdown files under the greenfield output directory. The planner uses that snapshot to skip spec slices that are already covered and emits `DONE` when there is no non-duplicate implementation issue left to file.
+
+With `--local`, seed `<output-dir>/greenfield/backlog-planning/*.md` before a run if you want drafts created elsewhere to count as existing backlog. In forge mode, if RepoLens cannot load the current open issue backlog, it tells the planner not to create a new issue while duplicate checks are unavailable.
 
 ## Remote deploy mode
 
@@ -617,7 +624,7 @@ To prune automatically at startup instead of running `clean` by hand, set `REPOL
 9. For each lens:
    - Composes prompt from base template + lens expert focus
    - Runs agent in target repo directory
-   - Agent follows the selected mode: code modes read code, deploy modes inspect the target, content modes inspect content/source material, and greenfield plans from `--spec` without inspecting repository code
+   - Agent follows the selected mode: code modes read code, deploy modes inspect the target, content modes inspect content/source material, and greenfield plans from `--spec` using the current open issue or local draft backlog without inspecting repository code
    - Agent creates remote issues (or writes markdown files in `--local` mode)
    - Loops until DONE detected (3× streak for audit/feature/bugfix, 1× for other modes)
 10. Writes `logs/<run-id>/status.json` while the run is active and generates `logs/<run-id>/summary.json`
@@ -659,7 +666,7 @@ Completed lenses are skipped; unfinished and rate-limited lenses are retried. Th
 ## Output
 
 - **Remote Issues** — Created directly in the target repo with severity-prefixed titles and domain labels (default)
-- **Local Markdown** — With `--local`, findings or backlog items are written as individual markdown files to `<output-dir>/<domain>/<lens-id>/NNN-slug.md` with YAML frontmatter (title, severity or priority, domain, lens, labels). Default output directory: `logs/<run-id>/rounds/round-1/lens-outputs/`
+- **Local Markdown** — With `--local`, findings or backlog items are written as individual markdown files to `<output-dir>/<domain>/<lens-id>/NNN-slug.md` with YAML frontmatter (title, severity or priority, domain, lens, labels). Default output directory: `logs/<run-id>/rounds/round-1/lens-outputs/`. In greenfield mode, existing draft files in that directory are treated as the current draft backlog on later planning iterations
 - **Round Artifacts** — Every run creates `logs/<run-id>/rounds/round-N/` for each resolved round, including `metadata.json`, `lens-outputs/`, and `digest.md`. `round-N/.completed` appears only after that round finishes cleanly. Multi-round runs write between-round `dispatch.md` handoff files on completed rounds before the final round
 - **Final Artifacts** — Every run creates `logs/<run-id>/final/` and `logs/<run-id>/final/filed/`. Successful multi-round runs promote a schema-validated `logs/<run-id>/final/manifest.json`; later filing stages record filed issue links under `final/filed/`
 - **Logs** — `logs/<run-id>/<domain>/<lens>/iteration-N-TIMESTAMP.txt`. After a lens finishes, all but the most recent `REPOLENS_ITERATION_KEEP` (default `3`) of these forensic captures are gzipped to `.txt.gz`. Prune whole run directories with `./repolens.sh clean`

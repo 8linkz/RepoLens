@@ -63,6 +63,18 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  TOTAL=$((TOTAL + 1))
+  if [[ "$haystack" != *"$needle"* ]]; then
+    PASS=$((PASS + 1))
+    echo "  PASS: $desc"
+  else
+    FAIL=$((FAIL + 1))
+    echo "  FAIL: $desc (did not expect to contain '$needle'; got '${haystack:0:200}')"
+  fi
+}
+
 assert_rc_zero() {
   local desc="$1" actual="$2"
   TOTAL=$((TOTAL + 1))
@@ -500,10 +512,95 @@ assert_contains "missing label reports missing argument" "missing argument" "$ou
 assert_log_empty "missing label does not call gh" "$gh_log"
 
 # ---------------------------------------------------------------------------
-# Group 4: acceptance regression guard
+# Group 4: open issue backlog snapshot for greenfield planning
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Group 4: acceptance regression guard ---"
+echo "--- Group 4: open issue backlog snapshot for greenfield planning ---"
+echo ""
+
+echo "Test 12a: gh open backlog snapshot lists all open issues without label filtering"
+reset_fake_gh
+gh_log="$TMPDIR/t12a-gh.log"
+err_file="$TMPDIR/t12a.err"
+: > "$gh_log"
+REPOLENS_FAKE_GH_RC=0
+REPOLENS_FAKE_GH_LOG="$gh_log"
+REPOLENS_FAKE_GH_STDOUT='[
+  {"number":2,"title":"Second backlog","body":"Second body","labels":[{"name":"beta"}],"url":"https://github.com/owner/repo/issues/2"},
+  {"number":1,"title":"First backlog","body":"First body\nwith whitespace","labels":[{"name":"alpha"},{"name":"greenfield"}],"url":"https://github.com/owner/repo/issues/1"}
+]'
+out="$(run_wrapper gh forge_open_issue_backlog_snapshot owner/repo 2>"$err_file")"
+rc=$?
+logged="$(cat "$gh_log")"
+assert_rc_zero "gh open backlog snapshot succeeds" "$rc"
+assert_eq "stderr is empty on gh backlog success" "" "$(cat "$err_file")"
+assert_contains "gh backlog snapshot includes first issue title" "### Open issue #1: First backlog" "$out"
+assert_contains "gh backlog snapshot includes normalized body excerpt" "First body with whitespace" "$out"
+assert_contains "gh backlog snapshot includes label names" "- Labels: alpha, greenfield" "$out"
+assert_contains "gh backlog snapshot includes URL" "- URL: https://github.com/owner/repo/issues/1" "$out"
+assert_contains "gh backlog lists open issues" "--state open" "$logged"
+assert_contains "gh backlog uses the 1000 issue limit" "--limit 1000" "$logged"
+assert_contains "gh backlog requests planning fields" "--json number,title,body,labels,url" "$logged"
+assert_not_contains "gh open backlog snapshot is not lens-label filtered" "--label" "$logged"
+
+echo ""
+echo "Test 12b: tea open backlog snapshot uses provider target binding and body fields"
+reset_fake_tea
+tea_log="$TMPDIR/t12b-tea.log"
+err_file="$TMPDIR/t12b.err"
+: > "$tea_log"
+REPOLENS_FAKE_TEA_RC=0
+REPOLENS_FAKE_TEA_LOG="$tea_log"
+REPOLENS_FAKE_TEA_STDOUT='{"issues":[{"index":7,"title":"Tea backlog","description":"Tea body","labels":["product","planning"],"html_url":"https://gitea.example/owner/repo/issues/7"}]}'
+out="$(run_wrapper tea forge_open_issue_backlog_snapshot owner/repo 2>"$err_file")"
+rc=$?
+logged="$(cat "$tea_log")"
+assert_rc_zero "tea open backlog snapshot succeeds" "$rc"
+assert_eq "stderr is empty on tea backlog success" "" "$(cat "$err_file")"
+assert_contains "tea backlog snapshot uses index as issue number" "### Open issue #7: Tea backlog" "$out"
+assert_contains "tea backlog snapshot includes description body" "- Body excerpt: Tea body" "$out"
+assert_contains "tea backlog snapshot includes string labels" "- Labels: product, planning" "$out"
+assert_eq "tea backlog passes supported issue-list flags without labels" \
+  "issues list --repo $FORGE_TEST_PROJECT --remote origin --state open --limit 1000 --output json" "$logged"
+
+echo ""
+echo "Test 12c: fj open backlog snapshot uses host-scoped search and content fields"
+reset_fake_fj
+fj_log="$TMPDIR/t12c-fj.log"
+err_file="$TMPDIR/t12c.err"
+: > "$fj_log"
+FORGE_HOST=codeberg.org
+REPOLENS_FAKE_FJ_RC=0
+REPOLENS_FAKE_FJ_LOG="$fj_log"
+REPOLENS_FAKE_FJ_STDOUT='{"data":[{"id":9,"title":"FJ backlog","content":"FJ body","labels":[{"Title":"security"},{"name":"greenfield"}],"web_url":"https://codeberg.org/owner/repo/issues/9"}]}'
+out="$(run_wrapper fj forge_open_issue_backlog_snapshot owner/repo 2>"$err_file")"
+rc=$?
+logged="$(cat "$fj_log")"
+assert_rc_zero "fj open backlog snapshot succeeds" "$rc"
+assert_eq "stderr is empty on fj backlog success" "" "$(cat "$err_file")"
+assert_contains "fj backlog snapshot uses id as issue number" "### Open issue #9: FJ backlog" "$out"
+assert_contains "fj backlog snapshot includes content body" "- Body excerpt: FJ body" "$out"
+assert_contains "fj backlog snapshot includes object label names" "- Labels: security, greenfield" "$out"
+assert_eq "fj backlog passes supported issue-search flags without labels" \
+  "-H codeberg.org --style json issue search --repo owner/repo --state open" "$logged"
+
+echo ""
+echo "Test 12d: malformed open backlog JSON fails without a misleading empty snapshot"
+reset_fake_gh
+err_file="$TMPDIR/t12d.err"
+REPOLENS_FAKE_GH_RC=0
+REPOLENS_FAKE_GH_STDOUT='not json'
+out="$(run_wrapper gh forge_open_issue_backlog_snapshot owner/repo 2>"$err_file")"
+rc=$?
+assert_rc_nonzero "malformed backlog JSON is observable to caller" "$rc"
+assert_eq "stdout is empty on malformed backlog JSON" "" "$out"
+assert_contains "warning reports backlog JSON parse failure" "jq failed to parse issue list" "$(cat "$err_file")"
+
+# ---------------------------------------------------------------------------
+# Group 5: acceptance regression guard
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Group 5: acceptance regression guard ---"
 echo ""
 
 echo "Test 13: lib/streak.sh contains no direct 'gh issue list' call"

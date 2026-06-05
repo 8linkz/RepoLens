@@ -142,7 +142,7 @@ _template_resolve_file_backed_value() {
   local key="$1" value="$2" path
 
   case "$key" in
-    PRIOR_ROUND_DIGEST|HYPOTHESES_TO_VERIFY|BUG_REPORT|TRIAGE_CONTEXT_PACK|PRIOR_FINDING_ANCHOR) ;;
+    PRIOR_ROUND_DIGEST|HYPOTHESES_TO_VERIFY|BUG_REPORT|TRIAGE_CONTEXT_PACK|PRIOR_FINDING_ANCHOR|CURRENT_BACKLOG) ;;
     *)
       printf '%s' "$value"
       return 0
@@ -173,9 +173,10 @@ _template_resolve_file_backed_value() {
 #   7. Builds and substitutes {{MIN_SEVERITY_SECTION}}
 #   8. Builds and substitutes {{MAX_ISSUES_SECTION}}
 #   9. Builds and substitutes {{LOCAL_MODE_SECTION}} (local markdown export override)
-#  10. Builds and substitutes {{SOURCE_SECTION}} (source material for content creation)
-#  11. Builds and substitutes {{SPEC_SECTION}} LAST (prevents placeholder injection)
-#  12. Substitutes the held round markdown after all {{*_SECTION}} replacements
+#  10. Holds {{CURRENT_BACKLOG_SECTION}} behind a sentinel for greenfield mode
+#  11. Builds and substitutes {{SOURCE_SECTION}} (source material for content creation)
+#  12. Builds and substitutes {{SPEC_SECTION}} LAST (prevents placeholder injection)
+#  13. Substitutes held untrusted markdown after all {{*_SECTION}} replacements
 #   Variables string format: "KEY1=VALUE1|KEY2=VALUE2|..."
 #   Large round context values may be passed as KEY=@/path/to/file for
 #   PRIOR_ROUND_DIGEST and HYPOTHESES_TO_VERIFY so markdown pipes and
@@ -188,6 +189,7 @@ compose_prompt() {
   local base_content lens_body spec_section prompt key value sentinel_seed
   local pair char next i vars_len
   local prior_round_digest_sentinel hypotheses_to_verify_sentinel round_context_sentinel triage_context_pack_sentinel
+  local current_backlog_section_sentinel
   local -a pairs=()
   local -A prompt_vars=()
 
@@ -198,6 +200,7 @@ compose_prompt() {
   hypotheses_to_verify_sentinel="__REPOLENS_HYPOTHESES_TO_VERIFY_${sentinel_seed}__"
   round_context_sentinel="__REPOLENS_ROUND_CONTEXT_SECTION_${sentinel_seed}__"
   triage_context_pack_sentinel="__REPOLENS_TRIAGE_CONTEXT_PACK_${sentinel_seed}__"
+  current_backlog_section_sentinel="__REPOLENS_CURRENT_BACKLOG_SECTION_${sentinel_seed}__"
 
   # Step 1: Insert lens body
   prompt="${base_content//\{\{LENS_BODY\}\}/$lens_body}"
@@ -459,6 +462,30 @@ Before writing a new finding, check if a file with a similar title already exist
 
   prompt="${prompt//\{\{LOCAL_MODE_SECTION\}\}/$local_mode_section}"
 
+  # Step 5c: Build current greenfield backlog section and hold its prompt
+  # position so untrusted issue/draft text cannot trigger later placeholder
+  # substitution.
+  local current_backlog_section=""
+  if [[ "$mode" == "greenfield" ]]; then
+    local current_backlog="${prompt_vars[CURRENT_BACKLOG]:-}"
+    if [[ -z "$current_backlog" ]]; then
+      current_backlog="No current backlog snapshot was provided for this planning iteration."
+    fi
+
+    current_backlog="${current_backlog//<\/current_backlog>/&lt;\/current_backlog&gt;}"
+    current_backlog="${current_backlog//<current_backlog>/&lt;current_backlog&gt;}"
+
+    current_backlog_section="## Current Backlog Snapshot
+
+This is the current backlog snapshot for this greenfield planning iteration. Use it to decide coverage and duplicates before creating another spec-derived issue. Do not inspect repository code for this decision.
+
+<current_backlog>
+${current_backlog}
+</current_backlog>"
+  fi
+
+  prompt="${prompt//\{\{CURRENT_BACKLOG_SECTION\}\}/$current_backlog_section_sentinel}"
+
   # Step 6: Build and insert source section
   local source_section=""
   if [[ -n "$source_file" && -f "$source_file" ]]; then
@@ -595,6 +622,7 @@ ${spec_content}
   prompt="${prompt//$prior_round_digest_sentinel/${prompt_vars[PRIOR_ROUND_DIGEST]:-}}"
   prompt="${prompt//$hypotheses_to_verify_sentinel/${prompt_vars[HYPOTHESES_TO_VERIFY]:-}}"
   prompt="${prompt//$triage_context_pack_sentinel/${prompt_vars[TRIAGE_CONTEXT_PACK]:-}}"
+  prompt="${prompt//$current_backlog_section_sentinel/$current_backlog_section}"
 
   printf "%s" "$prompt"
 }

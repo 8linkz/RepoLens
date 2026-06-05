@@ -876,6 +876,95 @@ template_var_escape() {
   printf '%s' "$value"
 }
 
+greenfield_backlog_inline_text() {
+  local value="${1:-}" max_len="${2:-3000}"
+  value="${value//$'\r'/ }"
+  value="${value//$'\n'/ }"
+  value="${value//$'\t'/ }"
+  while [[ "$value" == *"  "* ]]; do
+    value="${value//  / }"
+  done
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  if [[ "$max_len" =~ ^[0-9]+$ && "$max_len" -gt 0 && "${#value}" -gt "$max_len" ]]; then
+    value="${value:0:max_len}..."
+  fi
+  printf '%s' "$value"
+}
+
+greenfield_frontmatter_scalar() {
+  local file="$1" key="$2" value
+  value="$(read_frontmatter "$file" "$key" 2>/dev/null || true)"
+  value="${value%$'\r'}"
+  if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+    value="${value#\"}"
+    value="${value%\"}"
+  elif [[ "$value" == \'* && "$value" == *\' ]]; then
+    value="${value#\'}"
+    value="${value%\'}"
+  fi
+  greenfield_backlog_inline_text "$value" 500
+}
+
+greenfield_local_backlog_snapshot() {
+  local dir="$1" file count=0 title priority body filename
+
+  if [[ ! -d "$dir" ]]; then
+    printf 'No current local draft backlog items were found.\n'
+    return 0
+  fi
+
+  while IFS= read -r file; do
+    [[ -f "$file" ]] || continue
+    count=$((count + 1))
+    filename="$(basename "$file")"
+    title="$(greenfield_frontmatter_scalar "$file" "title")"
+    priority="$(greenfield_frontmatter_scalar "$file" "priority")"
+    body="$(read_body "$file" 2>/dev/null || true)"
+    if [[ -z "$body" ]]; then
+      body="$(sed 's/\r$//' "$file" 2>/dev/null || true)"
+    fi
+    body="$(greenfield_backlog_inline_text "$body" 3000)"
+
+    [[ -n "$title" ]] || title="<untitled>"
+    [[ -n "$priority" ]] || priority="<unspecified>"
+
+    printf '### Local draft: %s\n' "$filename"
+    printf -- '- Title: %s\n' "$title"
+    printf -- '- Priority: %s\n' "$priority"
+    if [[ -n "$body" ]]; then
+      printf -- '- Body excerpt: %s\n' "$body"
+    else
+      printf -- '- Body excerpt: <empty>\n'
+    fi
+    printf '\n'
+  done < <(find "$dir" -maxdepth 1 -type f -name '*.md' -print 2>/dev/null | sort)
+
+  if (( count == 0 )); then
+    printf 'No current local draft backlog items were found.\n'
+  fi
+}
+
+greenfield_write_current_backlog_snapshot() {
+  local target_file="$1" lens_local_dir="$2" repo="$3"
+
+  if $LOCAL_MODE; then
+    greenfield_local_backlog_snapshot "$lens_local_dir" > "$target_file"
+    return 0
+  fi
+
+  if forge_open_issue_backlog_snapshot "$repo" > "$target_file"; then
+    return 0
+  fi
+
+  log_warn "Greenfield current backlog snapshot failed; rendering a stop-safe snapshot for this iteration."
+  cat > "$target_file" <<'EOF'
+Current forge backlog state could not be loaded for this planning iteration.
+Do not create a new issue while current backlog coverage is unavailable. Output DONE.
+EOF
+  return 1
+}
+
 # --- Validate deploy target intent ---
 if $DEPLOY_TARGET_SET && [[ "$MODE" != "deploy" ]]; then
   die "--deploy-target requires --mode deploy"
@@ -2816,13 +2905,17 @@ run_lens() {
   fi
 
   # Compose prompt (pass local mode params)
-  local prompt lens_local_dir=""
+  local prompt="" lens_local_dir=""
   if $LOCAL_MODE; then
     lens_local_dir="${CURRENT_ROUND_OUTPUT_DIR:-$OUTPUT_DIR}/$domain/$lens_id"
     mkdir -p "$lens_local_dir"
-    prompt="$(compose_prompt "$base_file" "$lens_file" "$vars" "$SPEC_FILE" "$MODE" "$MAX_ISSUES" "$SOURCE_FILE" "$HOSTED" "true" "$lens_local_dir")"
+    if [[ "$MODE" != "greenfield" ]]; then
+      prompt="$(compose_prompt "$base_file" "$lens_file" "$vars" "$SPEC_FILE" "$MODE" "$MAX_ISSUES" "$SOURCE_FILE" "$HOSTED" "true" "$lens_local_dir")"
+    fi
   else
-    prompt="$(compose_prompt "$base_file" "$lens_file" "$vars" "$SPEC_FILE" "$MODE" "$MAX_ISSUES" "$SOURCE_FILE" "$HOSTED")"
+    if [[ "$MODE" != "greenfield" ]]; then
+      prompt="$(compose_prompt "$base_file" "$lens_file" "$vars" "$SPEC_FILE" "$MODE" "$MAX_ISSUES" "$SOURCE_FILE" "$HOSTED")"
+    fi
   fi
 
   # Create lens log directory
@@ -2916,6 +3009,18 @@ run_lens() {
     local effective_timeout_secs="$AGENT_TIMEOUT_SECS"
     if (( remaining_wall_secs < effective_timeout_secs )); then
       effective_timeout_secs="$remaining_wall_secs"
+    fi
+
+    if [[ "$MODE" == "greenfield" ]]; then
+      local current_backlog_file iteration_vars
+      current_backlog_file="$lens_log_dir/current-backlog-${iteration}.md"
+      greenfield_write_current_backlog_snapshot "$current_backlog_file" "$lens_local_dir" "$FORGE_REPO_SLUG" || true
+      iteration_vars="${vars}|CURRENT_BACKLOG=@${current_backlog_file}"
+      if $LOCAL_MODE; then
+        prompt="$(compose_prompt "$base_file" "$lens_file" "$iteration_vars" "$SPEC_FILE" "$MODE" "$MAX_ISSUES" "$SOURCE_FILE" "$HOSTED" "true" "$lens_local_dir")"
+      else
+        prompt="$(compose_prompt "$base_file" "$lens_file" "$iteration_vars" "$SPEC_FILE" "$MODE" "$MAX_ISSUES" "$SOURCE_FILE" "$HOSTED")"
+      fi
     fi
 
     run_agent "$AGENT" "$prompt" "$PROJECT_PATH" "$effective_timeout_secs" "$AGENT_KILL_GRACE_SECS" "$envelope_file" >"$output_file" 2>&1 || agent_rc=$?

@@ -740,6 +740,189 @@ forge_label_bootstrap() {
   return 0
 }
 
+_forge_backlog_inline_text() {
+  local value="${1:-}" max_len="${2:-3000}"
+  value="${value//$'\r'/ }"
+  value="${value//$'\n'/ }"
+  value="${value//$'\t'/ }"
+  while [[ "$value" == *"  "* ]]; do
+    value="${value//  / }"
+  done
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  if [[ "$max_len" =~ ^[0-9]+$ && "$max_len" -gt 0 && "${#value}" -gt "$max_len" ]]; then
+    value="${value:0:max_len}..."
+  fi
+  printf '%s' "$value"
+}
+
+_forge_format_open_backlog_json() {
+  local repo="$1" json="$2" rows number title body labels url count=0
+
+  if ! rows="$(printf '%s' "$json" | jq -r '
+    def items:
+      if type == "array" then .
+      elif (.issues? | type) == "array" then .issues
+      elif (.data? | type) == "array" then .data
+      else []
+      end;
+    def issue_number: .number // .index // .id // "";
+    def clean:
+      if . == null then ""
+      else tostring | gsub("[\t\r\n]+"; " ") | gsub("  +"; " ")
+      end;
+    def label_name:
+      if type == "object" then (.name // .title // .Name // .Title // empty)
+      else tostring
+      end;
+    items
+    | sort_by((issue_number | tostring | tonumber?) // 0)
+    | .[]
+    | [
+        (issue_number | tostring),
+        (.title | clean),
+        ((.body // .description // .content // "") | clean),
+        ([ (.labels // [])[]? | label_name ] | join(", ") | clean),
+        ((.url // .html_url // .web_url // .HTMLURL // "") | clean)
+      ]
+    | @tsv
+  ' 2>/dev/null)"; then
+    _forge_warn "forge_open_issue_backlog_snapshot: jq failed to parse issue list for repo=$repo"
+    return 1
+  fi
+
+  while IFS=$'\t' read -r number title body labels url; do
+    [[ -n "$number$title$body$labels$url" ]] || continue
+    count=$((count + 1))
+    number="$(_forge_backlog_inline_text "$number" 80)"
+    title="$(_forge_backlog_inline_text "$title" 500)"
+    body="$(_forge_backlog_inline_text "$body" 3000)"
+    labels="$(_forge_backlog_inline_text "$labels" 500)"
+    url="$(_forge_backlog_inline_text "$url" 500)"
+
+    [[ -n "$number" ]] || number="?"
+    [[ -n "$title" ]] || title="<untitled>"
+    [[ -n "$labels" ]] || labels="<none>"
+
+    printf '### Open issue #%s: %s\n' "$number" "$title"
+    printf -- '- URL: %s\n' "${url:-<unknown>}"
+    printf -- '- Labels: %s\n' "$labels"
+    if [[ -n "$body" ]]; then
+      printf -- '- Body excerpt: %s\n' "$body"
+    else
+      printf -- '- Body excerpt: <empty>\n'
+    fi
+    printf '\n'
+  done <<< "$rows"
+
+  if (( count == 0 )); then
+    printf 'No current open forge issues were found for %s.\n' "$repo"
+  fi
+}
+
+# forge_open_issue_backlog_snapshot <owner/repo>
+#   Emits a bounded markdown snapshot of all currently open issues on the
+#   target repo. This is planning context for greenfield deduplication, not the
+#   label-scoped accounting path used by forge_issue_list_count.
+forge_open_issue_backlog_snapshot() {
+  local repo="${1:-}"
+  [[ -n "$repo" ]] || die "forge_open_issue_backlog_snapshot: missing repo"
+
+  case "${FORGE_PROVIDER:-}" in
+    gh)
+      local gh_err gh_out gh_rc
+      gh_err="$(mktemp 2>/dev/null)" || gh_err=""
+      if [[ -n "$gh_err" ]]; then
+        gh_out="$(gh issue list -R "$repo" --state open --limit 1000 \
+          --json number,title,body,labels,url 2>"$gh_err")"
+        gh_rc=$?
+      else
+        gh_out="$(gh issue list -R "$repo" --state open --limit 1000 \
+          --json number,title,body,labels,url 2>/dev/null)"
+        gh_rc=$?
+      fi
+      if [[ "$gh_rc" -ne 0 ]]; then
+        local first_err=""
+        if [[ -n "$gh_err" && -s "$gh_err" ]]; then
+          first_err="$(head -n1 "$gh_err" 2>/dev/null || true)"
+        fi
+        [[ -n "$gh_err" ]] && rm -f "$gh_err"
+        _forge_warn "forge_open_issue_backlog_snapshot: gh failed for repo=$repo rc=$gh_rc err=${first_err:-<empty>}"
+        return 1
+      fi
+      [[ -n "$gh_err" ]] && rm -f "$gh_err"
+      _forge_format_open_backlog_json "$repo" "$gh_out"
+      return $?
+      ;;
+    tea)
+      local -a tea_target_flags=()
+      if [[ -n "${FORGE_PROJECT_PATH:-}" ]]; then
+        tea_target_flags=(--repo "$FORGE_PROJECT_PATH" --remote "${FORGE_REMOTE_NAME:-origin}")
+      elif [[ -n "${FORGE_TEA_LOGIN:-}" ]]; then
+        tea_target_flags=(--repo "$repo" --login "$FORGE_TEA_LOGIN")
+      else
+        die "forge_open_issue_backlog_snapshot: tea backend requires FORGE_PROJECT_PATH or FORGE_TEA_LOGIN for target binding"
+      fi
+
+      local tea_err tea_out tea_rc
+      tea_err="$(mktemp 2>/dev/null)" || tea_err=""
+      if [[ -n "$tea_err" ]]; then
+        tea_out="$(tea issues list "${tea_target_flags[@]}" --state open \
+          --limit 1000 --output json 2>"$tea_err")"
+        tea_rc=$?
+      else
+        tea_out="$(tea issues list "${tea_target_flags[@]}" --state open \
+          --limit 1000 --output json 2>/dev/null)"
+        tea_rc=$?
+      fi
+      if [[ "$tea_rc" -ne 0 ]]; then
+        local first_err=""
+        if [[ -n "$tea_err" && -s "$tea_err" ]]; then
+          first_err="$(head -n1 "$tea_err" 2>/dev/null || true)"
+        fi
+        [[ -n "$tea_err" ]] && rm -f "$tea_err"
+        _forge_warn "forge_open_issue_backlog_snapshot: tea failed for repo=$repo rc=$tea_rc err=${first_err:-<empty>}"
+        return 1
+      fi
+      [[ -n "$tea_err" ]] && rm -f "$tea_err"
+      _forge_format_open_backlog_json "$repo" "$tea_out"
+      return $?
+      ;;
+    fj)
+      [[ -n "${FORGE_HOST:-}" ]] \
+        || die "forge_open_issue_backlog_snapshot: fj backend requires FORGE_HOST"
+
+      local fj_err fj_out fj_rc
+      fj_err="$(mktemp 2>/dev/null)" || fj_err=""
+      if [[ -n "$fj_err" ]]; then
+        fj_out="$(fj -H "$FORGE_HOST" --style json issue search \
+          --repo "$repo" --state open 2>"$fj_err")"
+        fj_rc=$?
+      else
+        fj_out="$(fj -H "$FORGE_HOST" --style json issue search \
+          --repo "$repo" --state open 2>/dev/null)"
+        fj_rc=$?
+      fi
+      if [[ "$fj_rc" -ne 0 ]]; then
+        local first_err=""
+        if [[ -n "$fj_err" && -s "$fj_err" ]]; then
+          first_err="$(head -n1 "$fj_err" 2>/dev/null || true)"
+        fi
+        [[ -n "$fj_err" ]] && rm -f "$fj_err"
+        _forge_warn "forge_open_issue_backlog_snapshot: fj failed for repo=$repo rc=$fj_rc err=${first_err:-<empty>}"
+        return 1
+      fi
+      [[ -n "$fj_err" ]] && rm -f "$fj_err"
+      _forge_format_open_backlog_json "$repo" "$fj_out"
+      return $?
+      ;;
+    *)
+      _forge_warn "forge_open_issue_backlog_snapshot: unknown provider '${FORGE_PROVIDER:-}' (expected gh|tea|fj)"
+      return 1
+      ;;
+  esac
+}
+
 # forge_issue_list_count <owner/repo> <label>
 #   Counts open issues carrying <label> on the target repository.
 #   Prints the integer count on stdout and returns 0 on success.
