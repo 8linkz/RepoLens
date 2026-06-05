@@ -1,0 +1,551 @@
+#!/usr/bin/env bash
+# Copyright 2025-2026 Bootstrap Academy
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Behavioral contract for issue #283: greenfield mode turns a supplied product
+# spec into one next implementation issue per agent iteration, without treating
+# issue creation itself as DONE.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib/core.sh
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib/core.sh"
+# shellcheck source=../lib/template.sh
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib/template.sh"
+
+PASS=0
+FAIL=0
+TOTAL=0
+CREATED_RUN_IDS=()
+LAST_RUN_ID=""
+
+TMP_PARENT="$SCRIPT_DIR/logs/test-greenfield-mode"
+mkdir -p "$TMP_PARENT"
+TMPDIR="$(mktemp -d "$TMP_PARENT/run.XXXXXX")"
+
+cleanup() {
+  local run_id
+  rm -rf "$TMPDIR"
+  for run_id in "${CREATED_RUN_IDS[@]:-}"; do
+    [[ -n "$run_id" ]] && rm -rf "$SCRIPT_DIR/logs/$run_id"
+  done
+  rmdir "$TMP_PARENT" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+pass_with() {
+  PASS=$((PASS + 1))
+  echo "  PASS: $1"
+}
+
+fail_with() {
+  local desc="$1" detail="${2:-}"
+  FAIL=$((FAIL + 1))
+  echo "  FAIL: $desc"
+  if [[ -n "$detail" ]]; then
+    printf '    %s\n' "$detail"
+  fi
+}
+
+assert_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  TOTAL=$((TOTAL + 1))
+  if [[ "$expected" == "$actual" ]]; then
+    pass_with "$desc"
+  else
+    fail_with "$desc" "Expected: $expected | Actual: $actual"
+  fi
+}
+
+assert_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  TOTAL=$((TOTAL + 1))
+  if [[ "$haystack" == *"$needle"* ]]; then
+    pass_with "$desc"
+  else
+    fail_with "$desc" "Expected output to contain: $needle"
+  fi
+}
+
+assert_not_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  TOTAL=$((TOTAL + 1))
+  if [[ "$haystack" != *"$needle"* ]]; then
+    pass_with "$desc"
+  else
+    fail_with "$desc" "Did not expect output to contain: $needle"
+  fi
+}
+
+assert_file_exists() {
+  local desc="$1" path="$2"
+  TOTAL=$((TOTAL + 1))
+  if [[ -f "$path" ]]; then
+    pass_with "$desc"
+  else
+    fail_with "$desc" "Missing file: $path"
+  fi
+}
+
+register_created_run_id() {
+  local output_file="$1" run_id
+  run_id="$(grep -oE 'RepoLens run [^ ]+ starting' "$output_file" 2>/dev/null | head -1 | awk '{print $3}')"
+  LAST_RUN_ID="$run_id"
+  if [[ -n "$run_id" ]]; then
+    CREATED_RUN_IDS+=("$run_id")
+  fi
+}
+
+run_repolens_case() {
+  local name="$1"
+  shift
+  local out_file="$TMPDIR/$name.out"
+
+  LAST_RUN_ID=""
+  env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED \
+    PATH="$FAKE_BIN:$PATH" \
+    REPOLENS_AGENT_TIMEOUT=10 \
+    REPOLENS_LENS_MAX_WALL=60 \
+    bash "$SCRIPT_DIR/repolens.sh" \
+      --project "$PROJECT_DIR" \
+      --agent codex \
+      "$@" \
+      >"$out_file" 2>&1
+  local rc=$?
+  register_created_run_id "$out_file"
+  printf '%s\n' "$rc" > "$TMPDIR/$name.rc"
+}
+
+latest_captured_prompt() {
+  find "$PROMPT_CAPTURE_DIR" -maxdepth 1 -type f -name 'iteration-*.prompt.md' 2>/dev/null \
+    | sort \
+    | tail -1
+}
+
+PROJECT_DIR="$TMPDIR/project"
+FAKE_BIN="$TMPDIR/bin"
+SPEC_FILE="$TMPDIR/product-spec.md"
+SOURCE_FILE="$TMPDIR/supplemental-source.md"
+PROMPT_CAPTURE_DIR="$TMPDIR/captured-prompts"
+mkdir -p "$PROJECT_DIR" "$FAKE_BIN" "$PROMPT_CAPTURE_DIR"
+
+git -C "$PROJECT_DIR" init -q
+printf '# Skeletal project\n\nThis file must not be inspected by greenfield planning.\n' > "$PROJECT_DIR/README.md"
+git -C "$PROJECT_DIR" \
+  -c user.name='RepoLens Test' \
+  -c user.email='repolens@example.invalid' \
+  add README.md
+git -C "$PROJECT_DIR" \
+  -c user.name='RepoLens Test' \
+  -c user.email='repolens@example.invalid' \
+  commit -q -m 'fixture'
+
+cat > "$SPEC_FILE" <<'EOF'
+# Product Spec
+
+## Authentication
+Users can sign in with passkeys and recover access with email verification.
+
+## Backlog Expectations
+Plan implementation-sized issues in priority order without inspecting the
+current repository implementation.
+EOF
+
+cat > "$SOURCE_FILE" <<'EOF'
+Supplemental discovery notes. Greenfield planning may treat this as secondary
+context only; the product spec is authoritative.
+EOF
+
+cat > "$FAKE_BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+
+prompt="${*: -1}"
+call_file="${REPOLENS_GREENFIELD_CALLS:?missing call counter}"
+prompt_dir="${REPOLENS_GREENFIELD_PROMPT_DIR:?missing prompt capture dir}"
+
+call=0
+if [[ -f "$call_file" ]]; then
+  call="$(cat "$call_file")"
+fi
+call=$((call + 1))
+printf '%s\n' "$call" > "$call_file"
+mkdir -p "$prompt_dir"
+printf '%s\n' "$prompt" > "$prompt_dir/iteration-${call}.prompt.md"
+
+output_dir="$(printf '%s\n' "$prompt" | sed -n 's/^Write all findings to: `\(.*\)`$/\1/p' | sed -n '1p')"
+if [[ -z "$output_dir" ]]; then
+  printf 'No local output directory was rendered.\n'
+  exit 0
+fi
+mkdir -p "$output_dir"
+
+if (( call <= 2 )); then
+  cat > "$output_dir/$(printf '%03d' "$call")-greenfield-backlog-${call}.md" <<ISSUE
+---
+title: "[P${call}] Greenfield backlog ${call}"
+priority: P${call}
+domain: greenfield
+lens: backlog-planning
+labels:
+  - "greenfield:greenfield/backlog-planning"
+---
+
+## Summary
+Implement backlog slice ${call}.
+
+## Acceptance Criteria
+- The implementation satisfies the product spec.
+ISSUE
+  printf 'Created one greenfield backlog markdown file for iteration %s.\n' "$call"
+else
+  printf 'DONE\n'
+fi
+EOF
+chmod +x "$FAKE_BIN/codex"
+
+DOMAINS_FILE="$SCRIPT_DIR/config/domains.json"
+COLORS_FILE="$SCRIPT_DIR/config/label-colors.json"
+GREENFIELD_BASE="$SCRIPT_DIR/prompts/_base/greenfield.md"
+GREENFIELD_LENS="$SCRIPT_DIR/prompts/lenses/greenfield/backlog-planning.md"
+
+echo ""
+echo "=== Test Suite: greenfield mode (issue #283) ==="
+echo ""
+
+echo "Test 1: missing --spec fails with a mode-specific error"
+run_repolens_case "missing-spec" \
+  --mode greenfield \
+  --local \
+  --yes \
+  --dry-run \
+  --output "$TMPDIR/missing-spec-issues"
+missing_rc="$(cat "$TMPDIR/missing-spec.rc")"
+missing_out="$(cat "$TMPDIR/missing-spec.out")"
+assert_eq "missing --spec exits non-zero" "1" "$missing_rc"
+assert_contains "missing --spec error is clear" "Mode 'greenfield' requires --spec <file>" "$missing_out"
+assert_not_contains "missing --spec is not rejected as an invalid mode" "Invalid mode: greenfield" "$missing_out"
+
+echo ""
+echo "Test 2: help exposes greenfield and the required --spec contract"
+help_out="$(bash "$SCRIPT_DIR/repolens.sh" --help 2>&1)"
+assert_contains "top-level help lists greenfield" "greenfield" "$help_out"
+assert_contains "help still documents --spec" "--spec <file>" "$help_out"
+assert_contains "greenfield help names spec requirement" "greenfield" "$help_out"
+
+echo ""
+echo "Test 3: greenfield is wired into the mode default tables"
+greenfield_depth="${MODE_DEFAULT_DEPTH[greenfield]:-__missing__}"
+greenfield_rounds="${MODE_DEFAULT_ROUNDS[greenfield]:-__missing__}"
+greenfield_cap="${ROUNDS_CAP_BY_MODE[greenfield]:-__missing__}"
+assert_eq "MODE_DEFAULT_DEPTH[greenfield] is 1" "1" "$greenfield_depth"
+assert_eq "MODE_DEFAULT_ROUNDS[greenfield] is 1" "1" "$greenfield_rounds"
+assert_eq "ROUNDS_CAP_BY_MODE[greenfield] is 1" "1" "$greenfield_cap"
+if declare -F mode_default_depth >/dev/null 2>&1; then
+  assert_eq "mode_default_depth greenfield returns 1" "1" "$(mode_default_depth greenfield 2>/dev/null || true)"
+fi
+if declare -F agent_timeout_default_for_mode >/dev/null 2>&1; then
+  assert_eq "greenfield uses the normal 1800s timeout default" "1800" "$(agent_timeout_default_for_mode greenfield 2>/dev/null || true)"
+fi
+
+rounds_err="$TMPDIR/greenfield-rounds.err"
+if declare -F validate_rounds >/dev/null 2>&1; then
+  ( validate_rounds greenfield 2 "--rounds" ) >"$TMPDIR/greenfield-rounds.out" 2>"$rounds_err"
+  rounds_rc=$?
+  assert_eq "validate_rounds rejects --rounds 2 for greenfield" "1" "$rounds_rc"
+  assert_contains "rounds cap error names greenfield" "--rounds 2 exceeds cap for mode 'greenfield' (max: 1)" "$(cat "$rounds_err")"
+fi
+
+echo ""
+echo "Test 4: registry exposes one isolated greenfield backlog-planning lens"
+greenfield_mode="$(jq -r '.domains[] | select(.id == "greenfield") | .mode // empty' "$DOMAINS_FILE")"
+greenfield_lenses="$(jq -r '.domains[] | select(.id == "greenfield") | .lenses[]? | if type == "string" then . else .id end' "$DOMAINS_FILE" | paste -sd' ' -)"
+greenfield_color="$(jq -r '.greenfield // empty' "$COLORS_FILE")"
+assert_eq "greenfield domain mode is greenfield" "greenfield" "$greenfield_mode"
+assert_eq "greenfield has exactly backlog-planning lens" "backlog-planning" "$greenfield_lenses"
+assert_file_exists "greenfield base prompt exists" "$GREENFIELD_BASE"
+assert_file_exists "greenfield backlog-planning lens prompt exists" "$GREENFIELD_LENS"
+assert_not_contains "audit/default mode filter must not leak greenfield domain" "greenfield" \
+  "$(jq -r '.domains[] | select((.mode // "") != "discover" and (.mode // "") != "deploy" and (.mode // "") != "opensource" and (.mode // "") != "content" and (.mode // "") != "greenfield") | .id' "$DOMAINS_FILE")"
+TOTAL=$((TOTAL + 1))
+if [[ "$greenfield_color" =~ ^[0-9A-Fa-f]{6}$ ]]; then
+  pass_with "label color registry includes an explicit greenfield color"
+else
+  fail_with "label color registry includes an explicit greenfield color" "Actual: ${greenfield_color:-<missing>}"
+fi
+
+echo ""
+echo "Test 5: full rendered greenfield prompt has the spec-led lifecycle contract"
+if [[ -f "$GREENFIELD_BASE" && -f "$GREENFIELD_LENS" ]]; then
+  rendered="$(compose_prompt \
+    "$GREENFIELD_BASE" \
+    "$GREENFIELD_LENS" \
+    "LENS_NAME=Backlog Planning|DOMAIN_NAME=Greenfield Planning|REPO_OWNER=owner|REPO_NAME=repo|PROJECT_PATH=$PROJECT_DIR|LENS_LABEL=greenfield:greenfield/backlog-planning|DOMAIN_COLOR=44aa99|DOMAIN=greenfield|LENS_ID=backlog-planning|MODE=greenfield|RUN_ID=test-greenfield|FORGE_REPO_SLUG=owner/repo" \
+    "$SPEC_FILE" \
+    "greenfield" \
+    "3" \
+    "$SOURCE_FILE" \
+    "false" \
+    "true" \
+    "$TMPDIR/rendered-issues")"
+
+  assert_contains "rendered prompt uses spec as product-owner intent" "product-owner intent" "$rendered"
+  assert_contains "rendered prompt includes spec content" "Users can sign in with passkeys" "$rendered"
+  assert_contains "rendered prompt includes secondary source guidance" "secondary planning context" "$rendered"
+  assert_contains "rendered prompt includes supplemental source path" "**Source file path:** \`$SOURCE_FILE\`" "$rendered"
+  assert_contains "rendered prompt forbids repository code inspection" "Do not inspect repository code" "$rendered"
+  assert_contains "rendered prompt limits each invocation to one issue" "one implementation issue per invocation" "$rendered"
+  assert_contains "rendered prompt says issue creation is not completion" "Creating one backlog issue is not completion" "$rendered"
+  assert_contains "rendered prompt reserves DONE for sufficient backlog coverage" "DONE" "$rendered"
+  assert_contains "rendered prompt includes max-issues guidance" "at most 3 issue(s)" "$rendered"
+  assert_contains "rendered prompt includes local output path" "Write all findings to: \`$TMPDIR/rendered-issues\`" "$rendered"
+  assert_not_contains "rendered prompt has no generic lens DONE-after-created-issues rule" "After you have created all real GitHub issues" "$rendered"
+
+  done_after_created_lines="$(
+    printf '%s\n' "$rendered" \
+      | grep -Ei 'after (you have )?created.*output .*DONE|output .*DONE.*after (creating|created)' \
+      | grep -Eiv 'do not|not completion|must not' \
+      || true
+  )"
+  assert_eq "rendered prompt has no positive DONE-after-created-issue instruction" "" "$done_after_created_lines"
+  assert_not_contains "rendered prompt avoids discover codebase-current-state framing" "Current State" "$rendered"
+else
+  TOTAL=$((TOTAL + 1))
+  fail_with "full greenfield prompt can be rendered" "Missing $GREENFIELD_BASE or $GREENFIELD_LENS"
+fi
+
+echo ""
+echo "Test 6: valid greenfield --spec dry-run resolves only the planner lens"
+run_repolens_case "valid-dry-run" \
+  --mode greenfield \
+  --spec "$SPEC_FILE" \
+  --local \
+  --yes \
+  --dry-run \
+  --output "$TMPDIR/dry-run-issues"
+dry_rc="$(cat "$TMPDIR/valid-dry-run.rc")"
+dry_out="$(cat "$TMPDIR/valid-dry-run.out")"
+assert_eq "greenfield dry-run exits successfully" "0" "$dry_rc"
+assert_contains "dry-run reports greenfield mode" "Mode:         greenfield" "$dry_out"
+assert_contains "dry-run resolves exactly one lens" "Lenses:       1" "$dry_out"
+assert_contains "dry-run lists greenfield/backlog-planning" "greenfield/backlog-planning" "$dry_out"
+assert_not_contains "dry-run does not include audit security lens" "security/injection" "$dry_out"
+assert_contains "dry-run completion marker appears" "Dry run complete" "$dry_out"
+
+echo ""
+echo "Test 6b: --domain greenfield uses the isolated domain branch"
+run_repolens_case "domain-dry-run" \
+  --mode greenfield \
+  --spec "$SPEC_FILE" \
+  --domain greenfield \
+  --local \
+  --yes \
+  --dry-run \
+  --output "$TMPDIR/domain-dry-run-issues"
+domain_rc="$(cat "$TMPDIR/domain-dry-run.rc")"
+domain_out="$(cat "$TMPDIR/domain-dry-run.out")"
+assert_eq "greenfield --domain dry-run exits successfully" "0" "$domain_rc"
+assert_contains "--domain greenfield resolves planner lens" "greenfield/backlog-planning" "$domain_out"
+assert_contains "--domain greenfield resolves exactly one lens" "Lenses:       1" "$domain_out"
+
+echo ""
+echo "Test 6c: --relevant-domains greenfield composes with mode isolation"
+run_repolens_case "relevant-domains-dry-run" \
+  --mode greenfield \
+  --spec "$SPEC_FILE" \
+  --relevant-domains greenfield \
+  --local \
+  --yes \
+  --dry-run \
+  --output "$TMPDIR/relevant-domains-dry-run-issues"
+relevant_rc="$(cat "$TMPDIR/relevant-domains-dry-run.rc")"
+relevant_out="$(cat "$TMPDIR/relevant-domains-dry-run.out")"
+assert_eq "greenfield --relevant-domains dry-run exits successfully" "0" "$relevant_rc"
+assert_contains "--relevant-domains greenfield keeps planner lens" "greenfield/backlog-planning" "$relevant_out"
+assert_contains "--relevant-domains greenfield resolves exactly one lens" "Lenses:       1" "$relevant_out"
+assert_not_contains "--relevant-domains greenfield excludes audit lenses" "security/injection" "$relevant_out"
+
+echo ""
+echo "Test 7: local run keeps iterating after issue creation and stops on DONE"
+LIVE_CALLS="$TMPDIR/live-calls.txt"
+LIVE_OUTPUT="$TMPDIR/live-issues"
+rm -f "$LIVE_CALLS"
+rm -rf "$PROMPT_CAPTURE_DIR"
+mkdir -p "$PROMPT_CAPTURE_DIR"
+env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED \
+  PATH="$FAKE_BIN:$PATH" \
+  REPOLENS_AGENT_TIMEOUT=10 \
+  REPOLENS_LENS_MAX_WALL=60 \
+  REPOLENS_GREENFIELD_CALLS="$LIVE_CALLS" \
+  REPOLENS_GREENFIELD_PROMPT_DIR="$PROMPT_CAPTURE_DIR" \
+  bash "$SCRIPT_DIR/repolens.sh" \
+    --project "$PROJECT_DIR" \
+    --agent codex \
+    --mode greenfield \
+    --spec "$SPEC_FILE" \
+    --local \
+    --yes \
+    --focus backlog-planning \
+    --depth 1 \
+    --output "$LIVE_OUTPUT" \
+    >"$TMPDIR/live-run.out" 2>&1
+live_rc=$?
+register_created_run_id "$TMPDIR/live-run.out"
+live_run_id="$LAST_RUN_ID"
+live_calls="$(cat "$LIVE_CALLS" 2>/dev/null || printf '0')"
+live_issue_count="$(find "$LIVE_OUTPUT/greenfield/backlog-planning" -maxdepth 1 -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "greenfield live run exits successfully" "0" "$live_rc"
+assert_eq "planner invoked until third coverage-DONE iteration" "3" "$live_calls"
+assert_eq "two issue-creating iterations wrote two local backlog files" "2" "$live_issue_count"
+if [[ -n "$live_run_id" && -f "$SCRIPT_DIR/logs/$live_run_id/summary.json" ]]; then
+  summary="$SCRIPT_DIR/logs/$live_run_id/summary.json"
+  assert_eq "summary mode is greenfield" "greenfield" "$(jq -r '.mode' "$summary")"
+  assert_eq "summary records completed lens status" "completed" "$(jq -r '.lenses[0].status' "$summary")"
+  assert_eq "summary records three iterations" "3" "$(jq -r '.lenses[0].iterations' "$summary")"
+  assert_eq "summary records two created issues" "2" "$(jq -r '.totals.issues_created' "$summary")"
+else
+  TOTAL=$((TOTAL + 1))
+  fail_with "live run summary exists" "Run id: ${live_run_id:-missing}"
+fi
+captured_prompt="$(latest_captured_prompt)"
+if [[ -n "$captured_prompt" && -f "$captured_prompt" ]]; then
+  prompt_text="$(cat "$captured_prompt")"
+  assert_contains "captured prompt includes greenfield label" "greenfield:greenfield/backlog-planning" "$prompt_text"
+  assert_contains "captured prompt includes spec content" "Users can sign in with passkeys" "$prompt_text"
+  assert_not_contains "captured prompt rejects stale generic DONE rule" "After you have created all real GitHub issues" "$prompt_text"
+else
+  TOTAL=$((TOTAL + 1))
+  fail_with "captured rendered prompt exists" "No prompt captured in $PROMPT_CAPTURE_DIR"
+fi
+
+echo ""
+echo "Test 8: --max-issues remains usable and stops after the first backlog issue"
+MAX_CALLS="$TMPDIR/max-calls.txt"
+MAX_OUTPUT="$TMPDIR/max-issues"
+MAX_PROMPTS="$TMPDIR/max-prompts"
+rm -f "$MAX_CALLS"
+rm -rf "$MAX_PROMPTS"
+mkdir -p "$MAX_PROMPTS"
+env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED \
+  PATH="$FAKE_BIN:$PATH" \
+  REPOLENS_AGENT_TIMEOUT=10 \
+  REPOLENS_LENS_MAX_WALL=60 \
+  REPOLENS_GREENFIELD_CALLS="$MAX_CALLS" \
+  REPOLENS_GREENFIELD_PROMPT_DIR="$MAX_PROMPTS" \
+  bash "$SCRIPT_DIR/repolens.sh" \
+    --project "$PROJECT_DIR" \
+    --agent codex \
+    --mode greenfield \
+    --spec "$SPEC_FILE" \
+    --local \
+    --yes \
+    --focus backlog-planning \
+    --depth 1 \
+    --max-issues 1 \
+    --output "$MAX_OUTPUT" \
+    >"$TMPDIR/max-run.out" 2>&1
+max_rc=$?
+register_created_run_id "$TMPDIR/max-run.out"
+max_run_id="$LAST_RUN_ID"
+max_calls="$(cat "$MAX_CALLS" 2>/dev/null || printf '0')"
+max_issue_count="$(find "$MAX_OUTPUT/greenfield/backlog-planning" -maxdepth 1 -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "greenfield --max-issues run exits successfully" "0" "$max_rc"
+assert_eq "--max-issues invokes planner once" "1" "$max_calls"
+assert_eq "--max-issues writes one backlog file" "1" "$max_issue_count"
+if [[ -n "$max_run_id" && -f "$SCRIPT_DIR/logs/$max_run_id/summary.json" ]]; then
+  summary="$SCRIPT_DIR/logs/$max_run_id/summary.json"
+  assert_eq "--max-issues summary status" "max-issues" "$(jq -r '.lenses[0].status' "$summary")"
+  assert_eq "--max-issues summary total" "1" "$(jq -r '.totals.issues_created' "$summary")"
+else
+  TOTAL=$((TOTAL + 1))
+  fail_with "--max-issues summary exists" "Run id: ${max_run_id:-missing}"
+fi
+max_prompt="$(find "$MAX_PROMPTS" -maxdepth 1 -type f -name 'iteration-*.prompt.md' 2>/dev/null | sort | tail -1)"
+if [[ -n "$max_prompt" && -f "$max_prompt" ]]; then
+  max_prompt_text="$(cat "$max_prompt")"
+  assert_contains "--max-issues prompt includes global limit" "at most 1 issue(s)" "$max_prompt_text"
+  assert_contains "--max-issues prompt still says one issue per invocation" "one implementation issue per invocation" "$max_prompt_text"
+else
+  TOTAL=$((TOTAL + 1))
+  fail_with "--max-issues captured prompt exists" "No prompt captured in $MAX_PROMPTS"
+fi
+
+echo ""
+echo "Test 9: --min-severity is accepted but inert for priority-based greenfield output"
+MIN_CALLS="$TMPDIR/min-severity-calls.txt"
+MIN_OUTPUT="$TMPDIR/min-severity-issues"
+MIN_PROMPTS="$TMPDIR/min-severity-prompts"
+rm -f "$MIN_CALLS"
+rm -rf "$MIN_PROMPTS"
+mkdir -p "$MIN_PROMPTS"
+env -u REPOLENS_ROUNDS -u DONE_STREAK_REQUIRED \
+  PATH="$FAKE_BIN:$PATH" \
+  REPOLENS_AGENT_TIMEOUT=10 \
+  REPOLENS_LENS_MAX_WALL=60 \
+  REPOLENS_GREENFIELD_CALLS="$MIN_CALLS" \
+  REPOLENS_GREENFIELD_PROMPT_DIR="$MIN_PROMPTS" \
+  bash "$SCRIPT_DIR/repolens.sh" \
+    --project "$PROJECT_DIR" \
+    --agent codex \
+    --mode greenfield \
+    --spec "$SPEC_FILE" \
+    --local \
+    --yes \
+    --focus backlog-planning \
+    --depth 1 \
+    --min-severity high \
+    --max-issues 1 \
+    --output "$MIN_OUTPUT" \
+    >"$TMPDIR/min-severity-run.out" 2>&1
+min_rc=$?
+register_created_run_id "$TMPDIR/min-severity-run.out"
+min_run_id="$LAST_RUN_ID"
+min_calls="$(cat "$MIN_CALLS" 2>/dev/null || printf '0')"
+min_issue_count="$(find "$MIN_OUTPUT/greenfield/backlog-planning" -maxdepth 1 -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+min_output_text="$(cat "$TMPDIR/min-severity-run.out")"
+min_warning_text="--min-severity has no effect in greenfield mode (this mode does not use severity)"
+min_warning_count="$(grep -F -c -- "$min_warning_text" "$TMPDIR/min-severity-run.out" 2>/dev/null || true)"
+assert_eq "greenfield --min-severity run exits successfully" "0" "$min_rc"
+assert_eq "greenfield --min-severity logs the no-effect warning once" "1" "$min_warning_count"
+assert_eq "greenfield --min-severity invokes planner once under max-issues" "1" "$min_calls"
+assert_eq "greenfield --min-severity preserves priority-only backlog file" "1" "$min_issue_count"
+assert_not_contains "greenfield startup does not advertise active min-severity" "Min severity: high" "$min_output_text"
+assert_not_contains "greenfield output does not report filtered findings" "Findings filtered by --min-severity:" "$min_output_text"
+if [[ -n "$min_run_id" && -f "$SCRIPT_DIR/logs/$min_run_id/summary.json" ]]; then
+  summary="$SCRIPT_DIR/logs/$min_run_id/summary.json"
+  assert_eq "greenfield --min-severity summary total" "1" "$(jq -r '.totals.issues_created' "$summary")"
+  assert_eq "greenfield --min-severity filtered count is zero" "0" "$(jq -r '.totals.findings_filtered // 0' "$summary")"
+else
+  TOTAL=$((TOTAL + 1))
+  fail_with "greenfield --min-severity summary exists" "Run id: ${min_run_id:-missing}"
+fi
+min_prompt="$(find "$MIN_PROMPTS" -maxdepth 1 -type f -name 'iteration-*.prompt.md' 2>/dev/null | sort | tail -1)"
+if [[ -n "$min_prompt" && -f "$min_prompt" ]]; then
+  assert_not_contains "greenfield rendered prompt omits min-severity instructions" "## Minimum Severity" "$(cat "$min_prompt")"
+else
+  TOTAL=$((TOTAL + 1))
+  fail_with "greenfield --min-severity captured prompt exists" "No prompt captured in $MIN_PROMPTS"
+fi
+
+echo ""
+echo "================================"
+echo "Results: $PASS/$TOTAL passed, $FAIL failed"
+echo "================================"
+
+if [[ "$FAIL" -gt 0 ]]; then
+  exit 1
+fi

@@ -634,6 +634,15 @@
         "iac-networking",
         "iac-compliance"
       ]
+    },
+    {
+      "id": "greenfield",
+      "name": "Greenfield Planning",
+      "mode": "greenfield",
+      "order": 33,
+      "lenses": [
+        "backlog-planning"
+      ]
     }
   ]
 }

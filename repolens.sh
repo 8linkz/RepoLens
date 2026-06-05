@@ -131,7 +131,7 @@ Commands:
   clean [OPTIONS]         Remove old run directories under logs/ (see clean --help)
 
 Options:
-  --mode <mode>           audit (default) | feature | bugfix | bugreport | discover | deploy | custom | opensource | content
+  --mode <mode>           audit (default) | feature | bugfix | bugreport | discover | deploy | custom | opensource | content | greenfield
   --change <statement>    Change impact analysis — propagates statement across all lenses (implies --mode custom)
   --bug-report <file|text>
                           Symptom report for --mode bugreport. Accepts a file path (read verbatim)
@@ -157,7 +157,7 @@ Options:
   --parallel              Run lenses in parallel (one agent process per lens)
   --max-parallel <n>      Max concurrent agents in parallel mode (default: 8)
   --resume <run-id>       Resume a previous interrupted run
-  --spec <file>           Spec/PRD/roadmap to guide analysis (any text file)
+  --spec <file>           Spec/PRD/roadmap to guide analysis (required for --mode greenfield)
   --max-issues <n>        Stop after creating n total issues (dry-run quality check)
   --min-severity <level>  Only file findings at or above level: critical|high|medium|low
   --depth <n>             DONE streak depth per lens. Defaults: 3 for audit/feature/bugfix,
@@ -271,6 +271,8 @@ Environment:
                            Open-source readiness default: 1800.
   REPOLENS_AGENT_TIMEOUT_CONTENT
                            Content default: 1800.
+  REPOLENS_AGENT_TIMEOUT_GREENFIELD
+                           Greenfield default: 1800.
   REPOLENS_AGENT_TIMEOUT_BUGREPORT
                            Bug report default: 1800.
   REPOLENS_BUG_REPORT_PATH Fallback for --bug-report when the CLI flag is unset.
@@ -361,14 +363,15 @@ EOF
   echo "  custom      Change impact — analyzes what needs adapting (requires --change)"
   echo "  opensource  Open source readiness — audits if a repo can go public safely"
   echo "  content     Content audit & creation — audits existing content, creates from --source"
+  echo "  greenfield  Spec-to-backlog planning — creates one implementation issue per iteration (requires --spec)"
   echo "  bugreport   Symptom-driven investigation — runs lenses on a user bug report (requires --bug-report)"
 
   # Parse all domains in one jq call
   local domain_data
   domain_data="$(jq -r '.domains | sort_by(.order)[] | .id + "|" + .name + "|" + (.mode // "code") + "|" + ([.lenses[] | if type == "string" then . else .id end] | join(","))' "$domains_file")"
 
-  local code_total=0 discover_total=0 deploy_total=0 opensource_total=0 content_total=0
-  local code_output="" discover_output="" deploy_output="" opensource_output="" content_output=""
+  local code_total=0 discover_total=0 deploy_total=0 opensource_total=0 content_total=0 greenfield_total=0
+  local code_output="" discover_output="" deploy_output="" opensource_output="" content_output="" greenfield_output=""
 
   while IFS='|' read -r did dname dmode dlenses; do
     IFS=',' read -ra lens_arr <<< "$dlenses"
@@ -393,6 +396,9 @@ EOF
     elif [[ "$dmode" == "content" ]]; then
       content_total=$((content_total + lcount))
       content_output+="$section"$'\n'
+    elif [[ "$dmode" == "greenfield" ]]; then
+      greenfield_total=$((greenfield_total + lcount))
+      greenfield_output+="$section"$'\n'
     else
       code_total=$((code_total + lcount))
       code_output+="$section"$'\n'
@@ -415,6 +421,9 @@ EOF
   echo "Domains (content mode — ${content_total} lenses):"
   echo ""
   printf "%s" "$content_output"
+  echo "Domains (greenfield mode — ${greenfield_total} lenses):"
+  echo ""
+  printf "%s" "$greenfield_output"
 }
 
 # Dispatch read-only subcommands before normal run validation.
@@ -729,8 +738,8 @@ fi
 
 # --- Validate mode ---
 case "$MODE" in
-  audit|feature|bugfix|bugreport|discover|deploy|custom|opensource|content) ;;
-  *) die "Invalid mode: $MODE (expected 'audit', 'feature', 'bugfix', 'bugreport', 'discover', 'deploy', 'custom', 'opensource', or 'content')" ;;
+  audit|feature|bugfix|bugreport|discover|deploy|custom|opensource|content|greenfield) ;;
+  *) die "Invalid mode: $MODE (expected 'audit', 'feature', 'bugfix', 'bugreport', 'discover', 'deploy', 'custom', 'opensource', 'content', or 'greenfield')" ;;
 esac
 
 # --- Resolve --strategy (CLI flag wins over REPOLENS_STRATEGY env) ---
@@ -1073,6 +1082,11 @@ fi
 # defer the empty-bug-report check until after resume rehydration.
 if [[ "$MODE" == "bugreport" && -z "$BUG_REPORT" && -z "$RESUME_RUN_ID" ]]; then
   die "Mode 'bugreport' requires --bug-report <file|text> (or REPOLENS_BUG_REPORT_PATH env var)"
+fi
+
+# --- Validate greenfield spec requirement ---
+if [[ "$MODE" == "greenfield" && -z "$SPEC_FILE" ]]; then
+  die "Mode 'greenfield' requires --spec <file>"
 fi
 
 # --- Handle remote repository URL ---
@@ -1506,7 +1520,7 @@ if [[ -n "$MIN_SEVERITY" ]]; then
 fi
 MIN_SEVERITY_MODE_EXEMPT=""
 case "$MODE" in
-  discover|feature|custom)
+  discover|feature|custom|greenfield)
     if [[ -n "$MIN_SEVERITY" ]]; then
       MIN_SEVERITY_MODE_EXEMPT="$MODE"
       MIN_SEVERITY=""
@@ -1771,6 +1785,7 @@ run_remote_preflight() {
 [[ "$MODE" == "custom" ]] && log_info "Custom mode: change impact analysis (DONE streak: 1)"
 [[ "$MODE" == "opensource" ]] && log_info "Open source mode: readiness audit (DONE streak: 1)"
 [[ "$MODE" == "content" ]] && log_info "Content mode: content audit & creation (DONE streak: 1)"
+[[ "$MODE" == "greenfield" ]] && log_info "Greenfield mode: spec-to-backlog planning (DONE streak: 1)"
 [[ "$MODE" == "bugreport" ]] && log_info "Bug report mode: rounds-driven symptom investigation (rounds: $ROUNDS, DONE streak: $DONE_STREAK_REQUIRED)"
 [[ -n "$CHANGE_STATEMENT" ]] && log_info "Change: $CHANGE_STATEMENT"
 [[ -n "$SOURCE_FILE" ]] && log_info "Source: $SOURCE_FILE"
@@ -1786,9 +1801,10 @@ fi
 
 # --- Resolve lens list ---
 resolve_lenses() {
-  # Mode-aware jq filter: discover sees only discover domains, others exclude
-  # them. Deploy mode additionally narrows to a single domain based on
-  # TARGET_TYPE so server and Android lens families never co-run.
+  # Mode-aware jq filter: isolated modes see only their own domains, default
+  # code modes exclude isolated domains. Deploy additionally narrows to a
+  # single domain based on TARGET_TYPE so server and Android lens families
+  # never co-run.
   local deploy_domain="deployment"
   if [[ "$MODE" == "deploy" && "${TARGET_TYPE:-server}" == "android" ]]; then
     deploy_domain="android"
@@ -1800,11 +1816,11 @@ resolve_lenses() {
     local found_domain=""
     if [[ -n "$DOMAIN_FILTER" ]]; then
       found_domain="$(jq -r --arg lens "$FOCUS" --arg d "$DOMAIN_FILTER" --arg mode "$MODE" --arg deploy_domain "$deploy_domain" \
-        '.domains[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain) elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content") end) | select(.id == $d) | select([.lenses[] | if type == "string" then . else .id end] | index($lens)) | .id' "$DOMAINS_FILE" | head -1)"
+        '.domains[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain) elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") elif $mode == "greenfield" then select(.mode == "greenfield") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content" and .mode != "greenfield") end) | select(.id == $d) | select([.lenses[] | if type == "string" then . else .id end] | index($lens)) | .id' "$DOMAINS_FILE" | head -1)"
       [[ -n "$found_domain" ]] || die "Lens '$FOCUS' not found in domain '$DOMAIN_FILTER' (mode: $MODE)"
     else
       found_domain="$(jq -r --arg lens "$FOCUS" --arg mode "$MODE" --arg deploy_domain "$deploy_domain" \
-        '.domains[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain) elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content") end) | select([.lenses[] | if type == "string" then . else .id end] | index($lens)) | .id' "$DOMAINS_FILE" | head -1)"
+        '.domains[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain) elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") elif $mode == "greenfield" then select(.mode == "greenfield") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content" and .mode != "greenfield") end) | select([.lenses[] | if type == "string" then . else .id end] | index($lens)) | .id' "$DOMAINS_FILE" | head -1)"
       [[ -n "$found_domain" ]] || die "Lens '$FOCUS' not found in domains.json (mode: $MODE)"
     fi
 
@@ -1819,7 +1835,7 @@ resolve_lenses() {
     # Domain filter mode
     local domain_exists=""
     domain_exists="$(jq -r --arg d "$DOMAIN_FILTER" --arg mode "$MODE" --arg deploy_domain "$deploy_domain" \
-      '.domains[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain) elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content") end) | select(.id == $d) | .id' "$DOMAINS_FILE")"
+      '.domains[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain) elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") elif $mode == "greenfield" then select(.mode == "greenfield") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content" and .mode != "greenfield") end) | select(.id == $d) | .id' "$DOMAINS_FILE")"
     [[ -n "$domain_exists" ]] || die "Domain '$DOMAIN_FILTER' not found in domains.json (mode: $MODE)"
 
     jq -r --arg d "$DOMAIN_FILTER" \
@@ -1830,7 +1846,7 @@ resolve_lenses() {
   # All lenses — ordered by domain order
   local _all_lenses
   _all_lenses="$(jq -r --arg mode "$MODE" --arg deploy_domain "$deploy_domain" \
-    '.domains | sort_by(.order)[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain) elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content") end) | .id as $d | .lenses[] | (if type == "string" then {id: ., skip_modes: []} else . end) | select(((.skip_modes // []) | index($mode)) | not) | $d + "/" + .id' "$DOMAINS_FILE")"
+    '.domains | sort_by(.order)[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain) elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") elif $mode == "greenfield" then select(.mode == "greenfield") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content" and .mode != "greenfield") end) | .id as $d | .lenses[] | (if type == "string" then {id: ., skip_modes: []} else . end) | select(((.skip_modes // []) | index($mode)) | not) | $d + "/" + .id' "$DOMAINS_FILE")"
 
   # Issue #228: --relevant-domains <csv> deterministic allowlist. Operator-given
   # CSV of domain ids; intersects with the mode-filtered lens list. Validated
@@ -1842,7 +1858,7 @@ resolve_lenses() {
       [[ -z "$_rd_allow_id" ]] && continue
       _rd_allowed["$_rd_allow_id"]=1
     done < <(jq -r --arg mode "$MODE" --arg deploy_domain "$deploy_domain" \
-      '.domains[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain) elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content") end) | .id' "$DOMAINS_FILE")
+      '.domains[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain) elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") elif $mode == "greenfield" then select(.mode == "greenfield") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content" and .mode != "greenfield") end) | .id' "$DOMAINS_FILE")
 
     local -A _rd_keep=()
     local _rd_token _rd_count=0
@@ -1914,7 +1930,8 @@ resolve_lenses() {
          elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain)
          elif $mode == "opensource" then select(.mode == "opensource")
          elif $mode == "content" then select(.mode == "content")
-         else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content")
+         elif $mode == "greenfield" then select(.mode == "greenfield")
+         else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content" and .mode != "greenfield")
          end)
       | [.id] + ((.keywords // []) | map(ascii_downcase))
       | @tsv
@@ -2609,6 +2626,7 @@ ensure_labels() {
     custom)      label_prefix="change" ;;
     opensource)  label_prefix="opensource" ;;
     content)     label_prefix="content" ;;
+    greenfield)  label_prefix="greenfield" ;;
   esac
 
   local label_set_file
@@ -2738,6 +2756,7 @@ run_lens() {
     custom)      label_prefix="change" ;;
     opensource)  label_prefix="opensource" ;;
     content)     label_prefix="content" ;;
+    greenfield)  label_prefix="greenfield" ;;
   esac
   lens_label="${label_prefix}:${domain}/${lens_id}"
 

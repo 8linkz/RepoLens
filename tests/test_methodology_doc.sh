@@ -408,8 +408,10 @@ done
 
 echo ""
 echo "Test 44: Does not claim wrong number of modes"
-for wrong_modes in "6 mode" "7 mode" "8 mode" "10 mode"; do
-  assert_not_contains "no stale claim of $wrong_modes" "$wrong_modes" "$methodology_content"
+for wrong_modes in 6 7 8 9 10; do
+  if [[ "$wrong_modes" -ne "$actual_mode_count" ]]; then
+    assert_not_contains "no stale claim of $wrong_modes mode" "$wrong_modes mode" "$methodology_content"
+  fi
 done
 
 # =====================================================================
@@ -423,7 +425,7 @@ assert_contains "contains toolgate lens count ($toolgate_count)" "$toolgate_coun
 
 echo ""
 echo "Test 46: Code analysis lens count matches codebase"
-code_analysis_count="$(jq '[.domains[] | select(.mode == null or (.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content")) | select(.id != "toolgate") | .lenses | length] | add' "$DOMAINS_FILE")"
+code_analysis_count="$(jq '[.domains[] | select(.mode == null or (.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content" and .mode != "greenfield")) | select(.id != "toolgate") | .lenses | length] | add' "$DOMAINS_FILE")"
 assert_contains "contains code analysis lens count ($code_analysis_count)" "$code_analysis_count code analysis" "$methodology_content"
 
 echo ""
@@ -445,6 +447,11 @@ echo ""
 echo "Test 50: Content quality lens count matches codebase"
 content_count="$(jq '[.domains[] | select(.mode == "content") | .lenses | length] | add' "$DOMAINS_FILE")"
 assert_contains "contains content lens count ($content_count)" "$content_count" "$methodology_content"
+
+echo ""
+echo "Test 50b: Greenfield lens count matches codebase"
+greenfield_count="$(jq '[.domains[] | select(.mode == "greenfield") | .lenses | length] | add' "$DOMAINS_FILE")"
+assert_contains "contains greenfield lens count ($greenfield_count)" "$greenfield_count greenfield" "$methodology_content"
 
 # =====================================================================
 # 18. Cross-referenced constants must match repolens.sh

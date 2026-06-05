@@ -242,7 +242,8 @@ echo "Test 7: --scope-by-keywords is a no-op outside bugreport mode"
 expected_audit_count="$(jq '
   [.domains[]
    | select(.mode != "discover" and .mode != "deploy"
-            and .mode != "opensource" and .mode != "content")
+            and .mode != "opensource" and .mode != "content"
+            and .mode != "greenfield")
    | .lenses | length] | add
 ' "$DOMAINS_FILE")"
 out="$TMPDIR/out-audit.txt"

@@ -106,12 +106,13 @@ extract_lens_entries() {
 
 # Compute the bugreport-mode lens total dynamically from domains.json using
 # the same selection predicate the production resolve_lenses() catch-all
-# uses. NOTE: bugreport is a "default" mode — it includes every domain whose
-# mode is unset OR is one of the non-exclusive flavours.
+# uses. NOTE: bugreport is a "default" mode, so it includes domains whose
+# mode is unset and excludes all mode-specific domains.
 expected_bugreport_count="$(jq '
   [.domains[]
    | select(.mode != "discover" and .mode != "deploy"
-            and .mode != "opensource" and .mode != "content")
+            and .mode != "opensource" and .mode != "content"
+            and .mode != "greenfield")
    | .lenses | length] | add
 ' "$DOMAINS_FILE")"
 
