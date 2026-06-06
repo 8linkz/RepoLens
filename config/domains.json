@@ -649,6 +649,9 @@
       "name": "Fluency",
       "mode": "polish",
       "order": 34,
+      "polish_surfaces": [
+        "visual-ui"
+      ],
       "lenses": [
         "contrast-figure-ground",
         "alignment-symmetry",

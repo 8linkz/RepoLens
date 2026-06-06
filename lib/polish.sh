@@ -44,6 +44,109 @@ _polish_template_var_escape() {
   printf '%s' "$value"
 }
 
+_polish_has_ui_source_extension() {
+  local project_path="$1"
+  local marker
+
+  marker="$(find "$project_path" -type f \
+    \( -name '*.tsx' -o -name '*.jsx' -o -name '*.vue' -o -name '*.svelte' -o -name '*.astro' \) \
+    -not -path '*/.git/*' -not -path '*/node_modules/*' -not -path '*/vendor/*' \
+    -not -path '*/dist/*' -not -path '*/build/*' -not -path '*/coverage/*' \
+    -not -path '*/.cache/*' -not -path '*/generated/*' -not -path '*/docs/*' \
+    -print -quit 2>/dev/null)"
+
+  [[ -n "$marker" ]]
+}
+
+_polish_has_ui_package_marker() {
+  local project_path="$1"
+  local package_file
+
+  while IFS= read -r package_file; do
+    [[ -n "$package_file" ]] || continue
+    if grep -qiE '"(@vitejs/plugin-react|@vitejs/plugin-vue|@vitejs/plugin-svelte|react|react-dom|next|vue|nuxt|svelte|@sveltejs/kit|vite|astro|@angular/core|@remix-run/react|solid-js|tailwindcss)"[[:space:]]*:' "$package_file"; then
+      return 0
+    fi
+  done < <(find "$project_path" -type f -name package.json \
+    -not -path '*/.git/*' -not -path '*/node_modules/*' -not -path '*/vendor/*' \
+    -not -path '*/dist/*' -not -path '*/build/*' -not -path '*/coverage/*' \
+    -not -path '*/.cache/*' -not -path '*/generated/*' -not -path '*/docs/*' \
+    -print 2>/dev/null)
+
+  return 1
+}
+
+_polish_has_app_markup_or_styles() {
+  local project_path="$1"
+  local marker
+
+  marker="$(find "$project_path" -type f \
+    \( -name '*.html' -o -name '*.htm' -o -name '*.css' -o -name '*.scss' -o -name '*.sass' -o -name '*.less' -o -name '*.mdx' -o -name '*.erb' -o -name '*.hbs' -o -name '*.jinja' -o -name '*.jinja2' -o -name '*.twig' \) \
+    -not -path '*/.git/*' -not -path '*/node_modules/*' -not -path '*/vendor/*' \
+    -not -path '*/generated/*' -not -path '*/dist/*' -not -path '*/build/*' \
+    -not -path '*/coverage/*' -not -path '*/.cache/*' -not -path '*/docs/*' \
+    -print -quit 2>/dev/null)"
+
+  [[ -n "$marker" ]]
+}
+
+_polish_has_flutter_marker() {
+  local project_path="$1"
+  local pubspec_file
+
+  while IFS= read -r pubspec_file; do
+    [[ -n "$pubspec_file" ]] || continue
+    if grep -qiE '(^|[[:space:]])flutter:|sdk:[[:space:]]*flutter' "$pubspec_file"; then
+      return 0
+    fi
+  done < <(find "$project_path" -type f -name pubspec.yaml \
+    -not -path '*/.git/*' -not -path '*/vendor/*' -not -path '*/generated/*' \
+    -not -path '*/build/*' -not -path '*/.dart_tool/*' \
+    -not -path '*/docs/*' \
+    -print 2>/dev/null)
+
+  return 1
+}
+
+_polish_has_mobile_ui_marker() {
+  local project_path="$1"
+  local marker
+
+  if _polish_has_flutter_marker "$project_path"; then
+    return 0
+  fi
+
+  marker="$(find "$project_path" -type f \
+    \( -path '*/src/main/res/layout/*.xml' -o -path '*/src/main/res/layout-*/*.xml' -o -name '*.storyboard' -o -name '*.xib' \) \
+    -not -path '*/.git/*' -not -path '*/vendor/*' -not -path '*/generated/*' \
+    -not -path '*/build/*' -not -path '*/.gradle/*' \
+    -not -path '*/docs/*' \
+    -print -quit 2>/dev/null)"
+
+  [[ -n "$marker" ]]
+}
+
+# detect_polish_surface <project_path>
+#   Prints visual-ui when the target tree has strong UI markers, otherwise
+#   cli-backend. Mixed repositories prefer visual-ui so fluency polish is not
+#   skipped when a real UI is present.
+detect_polish_surface() {
+  local project_path="${1:-}"
+
+  [[ -n "$project_path" ]] || { printf '%s\n' "cli-backend"; return 0; }
+  project_path="$(cd "$project_path" 2>/dev/null && pwd)" || { printf '%s\n' "cli-backend"; return 0; }
+  [[ -d "$project_path" ]] || { printf '%s\n' "cli-backend"; return 0; }
+
+  if _polish_has_ui_package_marker "$project_path" ||
+    _polish_has_ui_source_extension "$project_path" ||
+    _polish_has_app_markup_or_styles "$project_path" ||
+    _polish_has_mobile_ui_marker "$project_path"; then
+    printf '%s\n' "visual-ui"
+  else
+    printf '%s\n' "cli-backend"
+  fi
+}
+
 _polish_voice_profile_fallback() {
   cat <<'EOF'
 ## Project Voice Profile

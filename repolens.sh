@@ -1893,6 +1893,12 @@ run_remote_preflight() {
 [[ "$MODE" == "content" ]] && log_info "Content mode: content audit & creation (DONE streak: 1)"
 [[ "$MODE" == "greenfield" ]] && log_info "Greenfield mode: spec-to-backlog planning (DONE streak: 1)"
 [[ "$MODE" == "polish" ]] && log_info "Polish mode: single-pass polishing (DONE streak: 1)"
+POLISH_SURFACE=""
+if [[ "$MODE" == "polish" ]]; then
+  POLISH_SURFACE="$(detect_polish_surface "$PROJECT_PATH")"
+  export POLISH_SURFACE
+  log_info "Polish surface: $POLISH_SURFACE"
+fi
 [[ "$MODE" == "bugreport" ]] && log_info "Bug report mode: rounds-driven symptom investigation (rounds: $ROUNDS, DONE streak: $DONE_STREAK_REQUIRED)"
 [[ -n "$CHANGE_STATEMENT" ]] && log_info "Change: $CHANGE_STATEMENT"
 [[ -n "$SOURCE_FILE" ]] && log_info "Source: $SOURCE_FILE"
@@ -1911,24 +1917,74 @@ resolve_lenses() {
   # Mode-aware jq filter: isolated modes see only their own domains, default
   # code modes exclude isolated domains. Deploy additionally narrows to a
   # single domain based on TARGET_TYPE so server and Android lens families
-  # never co-run.
+  # never co-run. Polish additionally narrows visual-only domains to visual
+  # polish surfaces.
   local deploy_domain="deployment"
   if [[ "$MODE" == "deploy" && "${TARGET_TYPE:-server}" == "android" ]]; then
     deploy_domain="android"
   fi
+  local polish_surface="${POLISH_SURFACE:-}"
+  local active_domain_jq='
+    def active_domain:
+      if $mode == "discover" then
+        select(.mode == "discover")
+      elif $mode == "deploy" then
+        select(.mode == "deploy" and .id == $deploy_domain)
+      elif $mode == "opensource" then
+        select(.mode == "opensource")
+      elif $mode == "content" then
+        select(.mode == "content")
+      elif $mode == "greenfield" then
+        select(.mode == "greenfield")
+      elif $mode == "polish" then
+        select(.mode == "polish")
+        | select(
+            ($polish_surface == "")
+            or ((.polish_surfaces // ["visual-ui", "cli-backend"]) | index($polish_surface))
+          )
+      else
+        select(
+          .mode != "discover"
+          and .mode != "deploy"
+          and .mode != "opensource"
+          and .mode != "content"
+          and .mode != "greenfield"
+          and .mode != "polish"
+        )
+      end;
+  '
 
   if [[ -n "$FOCUS" ]]; then
     # Single lens mode — find which domain it belongs to. If a domain filter is
     # also present, use it to disambiguate duplicate lens IDs across domains.
     local found_domain=""
     if [[ -n "$DOMAIN_FILTER" ]]; then
-      found_domain="$(jq -r --arg lens "$FOCUS" --arg d "$DOMAIN_FILTER" --arg mode "$MODE" --arg deploy_domain "$deploy_domain" \
-        '.domains[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain) elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") elif $mode == "greenfield" then select(.mode == "greenfield") elif $mode == "polish" then select(.mode == "polish") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content" and .mode != "greenfield" and .mode != "polish") end) | select(.id == $d) | select([.lenses[] | if type == "string" then . else .id end] | index($lens)) | .id' "$DOMAINS_FILE" | head -1)"
-      [[ -n "$found_domain" ]] || die "Lens '$FOCUS' not found in domain '$DOMAIN_FILTER' (mode: $MODE)"
+      found_domain="$(jq -r --arg lens "$FOCUS" --arg d "$DOMAIN_FILTER" --arg mode "$MODE" --arg deploy_domain "$deploy_domain" --arg polish_surface "$polish_surface" \
+        "$active_domain_jq
+        .domains[]
+        | active_domain
+        | select(.id == \$d)
+        | select([.lenses[] | if type == \"string\" then . else .id end] | index(\$lens))
+        | .id" "$DOMAINS_FILE" | head -1)"
+      if [[ -z "$found_domain" ]]; then
+        if [[ "$MODE" == "polish" ]]; then
+          die "Lens '$FOCUS' not available in domain '$DOMAIN_FILTER' for current polish surface: ${polish_surface:-unknown}"
+        fi
+        die "Lens '$FOCUS' not found in domain '$DOMAIN_FILTER' (mode: $MODE)"
+      fi
     else
-      found_domain="$(jq -r --arg lens "$FOCUS" --arg mode "$MODE" --arg deploy_domain "$deploy_domain" \
-        '.domains[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain) elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") elif $mode == "greenfield" then select(.mode == "greenfield") elif $mode == "polish" then select(.mode == "polish") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content" and .mode != "greenfield" and .mode != "polish") end) | select([.lenses[] | if type == "string" then . else .id end] | index($lens)) | .id' "$DOMAINS_FILE" | head -1)"
-      [[ -n "$found_domain" ]] || die "Lens '$FOCUS' not found in domains.json (mode: $MODE)"
+      found_domain="$(jq -r --arg lens "$FOCUS" --arg mode "$MODE" --arg deploy_domain "$deploy_domain" --arg polish_surface "$polish_surface" \
+        "$active_domain_jq
+        .domains[]
+        | active_domain
+        | select([.lenses[] | if type == \"string\" then . else .id end] | index(\$lens))
+        | .id" "$DOMAINS_FILE" | head -1)"
+      if [[ -z "$found_domain" ]]; then
+        if [[ "$MODE" == "polish" ]]; then
+          die "Lens '$FOCUS' not available for current polish surface: ${polish_surface:-unknown}"
+        fi
+        die "Lens '$FOCUS' not found in domains.json (mode: $MODE)"
+      fi
     fi
 
     local lens_file="$LENSES_DIR/$found_domain/$FOCUS.md"
@@ -1941,19 +1997,44 @@ resolve_lenses() {
   if [[ -n "$DOMAIN_FILTER" ]]; then
     # Domain filter mode
     local domain_exists=""
-    domain_exists="$(jq -r --arg d "$DOMAIN_FILTER" --arg mode "$MODE" --arg deploy_domain "$deploy_domain" \
-      '.domains[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain) elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") elif $mode == "greenfield" then select(.mode == "greenfield") elif $mode == "polish" then select(.mode == "polish") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content" and .mode != "greenfield" and .mode != "polish") end) | select(.id == $d) | .id' "$DOMAINS_FILE")"
-    [[ -n "$domain_exists" ]] || die "Domain '$DOMAIN_FILTER' not found in domains.json (mode: $MODE)"
+    domain_exists="$(jq -r --arg d "$DOMAIN_FILTER" --arg mode "$MODE" --arg deploy_domain "$deploy_domain" --arg polish_surface "$polish_surface" \
+      "$active_domain_jq
+      .domains[]
+      | active_domain
+      | select(.id == \$d)
+      | .id" "$DOMAINS_FILE")"
+    if [[ -z "$domain_exists" ]]; then
+      if [[ "$MODE" == "polish" ]]; then
+        die "Domain '$DOMAIN_FILTER' not available for current polish surface: ${polish_surface:-unknown}"
+      fi
+      die "Domain '$DOMAIN_FILTER' not found in domains.json (mode: $MODE)"
+    fi
 
-    jq -r --arg d "$DOMAIN_FILTER" \
-      '.domains[] | select(.id == $d) | .lenses[] | $d + "/" + (if type == "string" then . else .id end)' "$DOMAINS_FILE"
+    jq -r --arg d "$DOMAIN_FILTER" --arg mode "$MODE" --arg deploy_domain "$deploy_domain" --arg polish_surface "$polish_surface" \
+      "$active_domain_jq
+      .domains[]
+      | active_domain
+      | select(.id == \$d)
+      | .id as \$d
+      | .lenses[]
+      | (if type == \"string\" then {id: ., skip_modes: []} else . end)
+      | select(((.skip_modes // []) | index(\$mode)) | not)
+      | \$d + \"/\" + .id" "$DOMAINS_FILE"
     return
   fi
 
   # All lenses — ordered by domain order
   local _all_lenses
-  _all_lenses="$(jq -r --arg mode "$MODE" --arg deploy_domain "$deploy_domain" \
-    '.domains | sort_by(.order)[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain) elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") elif $mode == "greenfield" then select(.mode == "greenfield") elif $mode == "polish" then select(.mode == "polish") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content" and .mode != "greenfield" and .mode != "polish") end) | .id as $d | .lenses[] | (if type == "string" then {id: ., skip_modes: []} else . end) | select(((.skip_modes // []) | index($mode)) | not) | $d + "/" + .id' "$DOMAINS_FILE")"
+  _all_lenses="$(jq -r --arg mode "$MODE" --arg deploy_domain "$deploy_domain" --arg polish_surface "$polish_surface" \
+    "$active_domain_jq
+    .domains
+    | sort_by(.order)[]
+    | active_domain
+    | .id as \$d
+    | .lenses[]
+    | (if type == \"string\" then {id: ., skip_modes: []} else . end)
+    | select(((.skip_modes // []) | index(\$mode)) | not)
+    | \$d + \"/\" + .id" "$DOMAINS_FILE")"
 
   # Issue #228: --relevant-domains <csv> deterministic allowlist. Operator-given
   # CSV of domain ids; intersects with the mode-filtered lens list. Validated
@@ -1964,8 +2045,11 @@ resolve_lenses() {
     while IFS= read -r _rd_allow_id; do
       [[ -z "$_rd_allow_id" ]] && continue
       _rd_allowed["$_rd_allow_id"]=1
-    done < <(jq -r --arg mode "$MODE" --arg deploy_domain "$deploy_domain" \
-      '.domains[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain) elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") elif $mode == "greenfield" then select(.mode == "greenfield") elif $mode == "polish" then select(.mode == "polish") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content" and .mode != "greenfield" and .mode != "polish") end) | .id' "$DOMAINS_FILE")
+    done < <(jq -r --arg mode "$MODE" --arg deploy_domain "$deploy_domain" --arg polish_surface "$polish_surface" \
+      "$active_domain_jq
+      .domains[]
+      | active_domain
+      | .id" "$DOMAINS_FILE")
 
     local -A _rd_keep=()
     local _rd_token _rd_count=0
@@ -1978,6 +2062,9 @@ resolve_lenses() {
       _rd_token="${_rd_token%"${_rd_token##*[![:space:]]}"}"
       [[ -z "$_rd_token" ]] && continue
       if [[ -z "${_rd_allowed[$_rd_token]:-}" ]]; then
+        if [[ "$MODE" == "polish" ]]; then
+          die "--relevant-domains: domain id '$_rd_token' not available for current polish surface: ${polish_surface:-unknown}"
+        fi
         die "--relevant-domains: unknown or wrong-mode domain id '$_rd_token' (mode: $MODE)"
       fi
       _rd_keep["$_rd_token"]=1
@@ -2031,19 +2118,13 @@ resolve_lenses() {
       if (( _kw_match == 1 )); then
         _kw_keep["$_kw_dom"]=1
       fi
-    done < <(jq -r --arg mode "$MODE" --arg deploy_domain "$deploy_domain" '
+    done < <(jq -r --arg mode "$MODE" --arg deploy_domain "$deploy_domain" --arg polish_surface "$polish_surface" "
+      $active_domain_jq
       .domains[]
-      | (if $mode == "discover" then select(.mode == "discover")
-         elif $mode == "deploy" then select(.mode == "deploy" and .id == $deploy_domain)
-         elif $mode == "opensource" then select(.mode == "opensource")
-         elif $mode == "content" then select(.mode == "content")
-         elif $mode == "greenfield" then select(.mode == "greenfield")
-         elif $mode == "polish" then select(.mode == "polish")
-         else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content" and .mode != "greenfield" and .mode != "polish")
-         end)
+      | active_domain
       | [.id] + ((.keywords // []) | map(ascii_downcase))
       | @tsv
-    ' "$DOMAINS_FILE")
+    " "$DOMAINS_FILE")
 
     if (( ${#_kw_keep[@]} > 0 )); then
       local _kw_pruned="" _kw_entry _kw_entry_domain
