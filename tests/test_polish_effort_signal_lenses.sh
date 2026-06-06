@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Tests for issues #295 and #296: polish-mode fluency domain and lenses.
+# Tests for issue #297: polish-mode effort-signal domain and lenses.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -70,46 +70,47 @@ DOMAINS_FILE="$SCRIPT_DIR/config/domains.json"
 COLORS_FILE="$SCRIPT_DIR/config/label-colors.json"
 LENSES_DIR="$SCRIPT_DIR/prompts/lenses"
 
-EXPECTED_LENSES="contrast-figure-ground alignment-symmetry spacing-consistency motion-consistency convention-match typographic-rhythm"
+EXPECTED_LENSES="empty-states error-and-404-grace edge-case-thoughtfulness"
 
 echo ""
-echo "=== Test Suite: polish fluency lenses (issues #295 and #296) ==="
+echo "=== Test Suite: polish effort-signal lenses (issue #297) ==="
 echo ""
 
-echo "Test 1: fluency domain is registered for polish mode"
-fluency_mode="$(jq -r '.domains[] | select(.id == "fluency") | .mode' "$DOMAINS_FILE")"
-assert_eq "fluency mode is polish" "polish" "$fluency_mode"
+echo "Test 1: effort-signal domain is registered for polish mode"
+mode="$(jq -r '.domains[] | select(.id == "effort-signal") | .mode' "$DOMAINS_FILE")"
+assert_eq "effort-signal mode is polish" "polish" "$mode"
+order="$(jq -r '.domains[] | select(.id == "effort-signal") | .order' "$DOMAINS_FILE")"
+assert_eq "effort-signal follows fluency" "35" "$order"
 
 echo ""
-echo "Test 2: fluency domain exposes exactly the expected polish lenses"
-fluency_lenses="$(jq -r '.domains[] | select(.id == "fluency") | .lenses | join(" ")' "$DOMAINS_FILE")"
-assert_eq "fluency lens list matches issue scope" "$EXPECTED_LENSES" "$fluency_lenses"
+echo "Test 2: effort-signal exposes exactly the expected polish lenses"
+lenses="$(jq -r '.domains[] | select(.id == "effort-signal") | .lenses | join(" ")' "$DOMAINS_FILE")"
+assert_eq "effort-signal lens list matches issue scope" "$EXPECTED_LENSES" "$lenses"
 
 echo ""
-echo "Test 3: fluency label color is deterministic"
-color="$(jq -r '.fluency' "$COLORS_FILE")"
-assert_eq "fluency label color exists" "14b8a6" "$color"
+echo "Test 3: effort-signal label color is deterministic"
+color="$(jq -r '."effort-signal"' "$COLORS_FILE")"
+assert_eq "effort-signal label color exists" "f59e0b" "$color"
 
 echo ""
-echo "Test 4: polish mode resolves fluency lenses"
+echo "Test 4: polish mode resolves effort-signal lenses"
 polish_lenses="$(jq -r --arg mode "polish" \
   '.domains | sort_by(.order)[] | (if $mode == "polish" then select(.mode == "polish") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content" and .mode != "greenfield" and .mode != "polish") end) | .id as $d | .lenses[] | $d + "/" + .' "$DOMAINS_FILE")"
-assert_eq "polish lens count is 9" "9" "$(printf '%s\n' "$polish_lenses" | sed '/^$/d' | wc -l | tr -d ' ')"
 for lens in $EXPECTED_LENSES; do
-  assert_contains "polish resolves fluency/$lens" "fluency/$lens" "$polish_lenses"
+  assert_contains "polish resolves effort-signal/$lens" "effort-signal/$lens" "$polish_lenses"
 done
 
 echo ""
-echo "Test 5: default audit selection excludes fluency"
+echo "Test 5: default audit selection excludes effort-signal"
 audit_lenses="$(jq -r --arg mode "audit" \
   '.domains | sort_by(.order)[] | (if $mode == "discover" then select(.mode == "discover") elif $mode == "deploy" then select(.mode == "deploy") elif $mode == "opensource" then select(.mode == "opensource") elif $mode == "content" then select(.mode == "content") elif $mode == "greenfield" then select(.mode == "greenfield") elif $mode == "polish" then select(.mode == "polish") else select(.mode != "discover" and .mode != "deploy" and .mode != "opensource" and .mode != "content" and .mode != "greenfield" and .mode != "polish") end) | .id as $d | .lenses[] | $d + "/" + .' "$DOMAINS_FILE")"
-fluency_audit_lenses="$(printf '%s\n' "$audit_lenses" | grep '^fluency/' || true)"
-assert_eq "no fluency lenses in default audit mode" "" "$fluency_audit_lenses"
+effort_signal_audit_lenses="$(printf '%s\n' "$audit_lenses" | grep '^effort-signal/' || true)"
+assert_eq "no effort-signal lenses in default audit mode" "" "$effort_signal_audit_lenses"
 
 echo ""
-echo "Test 6: all fluency lens files exist with required frontmatter and focus body"
+echo "Test 6: all effort-signal lens files exist with required frontmatter and focus body"
 for lens in $EXPECTED_LENSES; do
-  lens_file="$LENSES_DIR/fluency/$lens.md"
+  lens_file="$LENSES_DIR/effort-signal/$lens.md"
   if [[ ! -f "$lens_file" ]]; then
     TOTAL=$((TOTAL + 1))
     fail_with "$lens file exists" "Missing $lens_file"
@@ -119,49 +120,33 @@ for lens in $EXPECTED_LENSES; do
   lens_content="$(cat "$lens_file")"
   body="$(read_body "$lens_file")"
   assert_eq "$lens id frontmatter" "$lens" "$(read_frontmatter "$lens_file" "id")"
-  assert_eq "$lens domain frontmatter" "fluency" "$(read_frontmatter "$lens_file" "domain")"
+  assert_eq "$lens domain frontmatter" "effort-signal" "$(read_frontmatter "$lens_file" "domain")"
   assert_contains "$lens name frontmatter" "name:" "$lens_content"
   assert_contains "$lens role frontmatter" "role:" "$lens_content"
   assert_contains "$lens expert focus" "## Your Expert Focus" "$body"
-  assert_contains "$lens cites processing fluency" "processing fluency" "$body"
+  assert_contains "$lens uses polish framing" "polish mode" "$body"
+  assert_contains "$lens cites effort-gap rationale" "effort-gap rationale" "$body"
   assert_contains "$lens references project voice profile" "project voice profile" "$body"
   assert_contains "$lens permits No change needed" "No change needed" "$body"
-  assert_contains "$lens ties fluency to usability" "usable" "$body"
-  assert_contains "$lens ties fluency to beauty" "beautiful" "$body"
-  assert_contains "$lens ties fluency to trust" "trustworthy" "$body"
   assert_not_contains_regex "$lens avoids scoring language" 'scor(e|ing)|grade|rating' "$body"
 done
 
 echo ""
-echo "Test 7: each fluency lens names its evidence-backed lever"
-assert_contains "contrast lens names figure-ground contrast" \
-  "figure-ground contrast" "$(cat "$LENSES_DIR/fluency/contrast-figure-ground.md")"
-assert_contains "alignment lens names symmetry" \
-  "symmetry" "$(cat "$LENSES_DIR/fluency/alignment-symmetry.md")"
-assert_contains "alignment lens names figural goodness" \
-  "figural goodness" "$(cat "$LENSES_DIR/fluency/alignment-symmetry.md")"
-assert_contains "spacing lens names repetition" \
-  "repetition" "$(cat "$LENSES_DIR/fluency/spacing-consistency.md")"
-assert_contains "spacing lens names consistency" \
-  "consistency" "$(cat "$LENSES_DIR/fluency/spacing-consistency.md")"
-assert_contains "motion lens names shared easing" \
-  "shared easing" "$(cat "$LENSES_DIR/fluency/motion-consistency.md")"
-assert_contains "motion lens names duration tokens" \
-  "duration tokens" "$(cat "$LENSES_DIR/fluency/motion-consistency.md")"
-assert_contains "convention lens names prototypicality" \
-  "prototypicality" "$(cat "$LENSES_DIR/fluency/convention-match.md")"
-assert_contains "convention lens flags unintentional deviation" \
-  "Unintentional deviation" "$(cat "$LENSES_DIR/fluency/convention-match.md")"
-assert_contains "convention lens permits intentional voice-fit deviation" \
-  "intentional, voice-fit deviation" "$(cat "$LENSES_DIR/fluency/convention-match.md")"
-assert_contains "typographic lens names type scale" \
-  "type scale" "$(cat "$LENSES_DIR/fluency/typographic-rhythm.md")"
-assert_contains "typographic lens names line-height" \
-  "line-height" "$(cat "$LENSES_DIR/fluency/typographic-rhythm.md")"
-assert_contains "typographic lens names measure" \
-  "measure" "$(cat "$LENSES_DIR/fluency/typographic-rhythm.md")"
-assert_contains "typographic lens names vertical rhythm" \
-  "vertical rhythm" "$(cat "$LENSES_DIR/fluency/typographic-rhythm.md")"
+echo "Test 7: each effort-signal lens names its issue-specific surface"
+assert_contains "empty-states names zero-data states" \
+  "Zero-data" "$(cat "$LENSES_DIR/effort-signal/empty-states.md")"
+assert_contains "empty-states names no-results states" \
+  "no-results" "$(cat "$LENSES_DIR/effort-signal/empty-states.md")"
+assert_contains "error-and-404-grace names 404 pages" \
+  "404 pages" "$(cat "$LENSES_DIR/effort-signal/error-and-404-grace.md")"
+assert_contains "error-and-404-grace names recovery" \
+  "recovery" "$(cat "$LENSES_DIR/effort-signal/error-and-404-grace.md")"
+assert_contains "edge-case-thoughtfulness names singular/plural" \
+  "Singular/plural" "$(cat "$LENSES_DIR/effort-signal/edge-case-thoughtfulness.md")"
+assert_contains "edge-case-thoughtfulness names zero/one/many" \
+  "zero/one/many" "$(cat "$LENSES_DIR/effort-signal/edge-case-thoughtfulness.md")"
+assert_contains "edge-case-thoughtfulness names unsaved changes" \
+  "Unsaved changes" "$(cat "$LENSES_DIR/effort-signal/edge-case-thoughtfulness.md")"
 
 echo ""
 echo "================================"

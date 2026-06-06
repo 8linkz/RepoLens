@@ -153,13 +153,13 @@ else
 fi
 
 # =====================================================================
-# Contract 4: domains.json has exactly 7 mode-bearing domains
+# Contract 4: domains.json has exactly 8 mode-bearing domains
 # =====================================================================
 
 echo ""
-echo "Test 10: domains.json has exactly 7 mode-bearing domains"
+echo "Test 10: domains.json has exactly 8 mode-bearing domains"
 mode_count="$(jq '[.domains[] | select(.mode != null)] | length' "$DOMAINS_FILE")"
-assert_eq "7 domains have mode fields" "7" "$mode_count"
+assert_eq "8 domains have mode fields" "8" "$mode_count"
 
 echo ""
 echo "Test 11: discovery domain has mode 'discover'"
@@ -190,6 +190,11 @@ echo ""
 echo "Test 14c: fluency domain has mode 'polish'"
 mode_val="$(jq -r '.domains[] | select(.id == "fluency") | .mode' "$DOMAINS_FILE")"
 assert_eq "fluency mode is polish" "polish" "$mode_val"
+
+echo ""
+echo "Test 14d: effort-signal domain has mode 'polish'"
+mode_val="$(jq -r '.domains[] | select(.id == "effort-signal") | .mode' "$DOMAINS_FILE")"
+assert_eq "effort-signal mode is polish" "polish" "$mode_val"
 
 # =====================================================================
 # Contract 5: No unexpected mode fields on standard domains
@@ -260,6 +265,7 @@ cat > "$TMPDIR_SYNTH/domains.json" <<'SYNTH'
     { "id": "content-quality", "mode": "content", "lenses": [] },
     { "id": "greenfield", "mode": "greenfield", "lenses": [] },
     { "id": "fluency", "mode": "polish", "lenses": [] },
+    { "id": "effort-signal", "mode": "polish", "lenses": [] },
     { "id": "security", "lenses": [] },
     { "id": "bogus-domain", "mode": "bogus", "lenses": [] }
   ]
@@ -280,6 +286,7 @@ cat > "$TMPDIR_SYNTH/domains_clean.json" <<'SYNTH'
     { "id": "content-quality", "mode": "content", "lenses": [] },
     { "id": "greenfield", "mode": "greenfield", "lenses": [] },
     { "id": "fluency", "mode": "polish", "lenses": [] },
+    { "id": "effort-signal", "mode": "polish", "lenses": [] },
     { "id": "security", "lenses": [] },
     { "id": "architecture", "lenses": [] }
   ]
@@ -298,6 +305,7 @@ cat > "$TMPDIR_SYNTH/domains_multi.json" <<'SYNTH'
     { "id": "bad-two", "mode": "unknown", "lenses": [] },
     { "id": "greenfield", "mode": "greenfield", "lenses": [] },
     { "id": "fluency", "mode": "polish", "lenses": [] },
+    { "id": "effort-signal", "mode": "polish", "lenses": [] },
     { "id": "security", "lenses": [] }
   ]
 }

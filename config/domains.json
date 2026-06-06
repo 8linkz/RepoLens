@@ -657,6 +657,17 @@
         "convention-match",
         "typographic-rhythm"
       ]
+    },
+    {
+      "id": "effort-signal",
+      "name": "Effort Signal",
+      "mode": "polish",
+      "order": 35,
+      "lenses": [
+        "empty-states",
+        "error-and-404-grace",
+        "edge-case-thoughtfulness"
+      ]
     }
   ]
 }
