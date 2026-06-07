@@ -154,6 +154,14 @@ chmod +x "$FAKE_BIN/tea"
 cat > "$FAKE_BIN/fj" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${REPOLENS_FAKE_FJ_LOG:-/dev/null}"
+previous=""
+for arg in "$@"; do
+  if [[ "$previous" == "--style" && "$arg" == "json" ]]; then
+    printf "error: invalid value 'json' for '--style <STYLE>'\n" >&2
+    exit 2
+  fi
+  previous="$arg"
+done
 if [[ -n "${REPOLENS_FAKE_FJ_STDERR+x}" ]]; then
   printf '%s\n' "$REPOLENS_FAKE_FJ_STDERR" >&2
 fi
@@ -416,24 +424,24 @@ assert_eq "tea branch passes supported issue-list flags in order" \
   "issues list --repo $FORGE_TEST_PROJECT --remote origin --labels audit:demo --state open --limit 1000 --output json" "$logged"
 
 echo ""
-echo "Test 9: fj backend counts open issues with the expected issue-search argv (JSON-first per #244)"
+echo "Test 9: fj backend counts open issues with official minimal issue-search output"
 reset_fake_gh
 reset_fake_fj
 fj_log="$TMPDIR/t9-fj.log"
 : > "$fj_log"
 FORGE_HOST=codeberg.org
 REPOLENS_FAKE_FJ_RC=0
-# fj's --style json output is a JSON array of matching issues; the wrapper
-# counts via `jq 'length'` rather than parsing a leading text line.
-REPOLENS_FAKE_FJ_STDOUT='[{"number":1},{"number":2}]'
+# Official forgejo-cli rejects `--style json`; the wrapper must use minimal
+# output and parse the leading text count.
+REPOLENS_FAKE_FJ_STDOUT='2 issues'
 REPOLENS_FAKE_FJ_LOG="$fj_log"
 out="$(run_wrapper fj forge_issue_list_count owner/repo audit:demo 2>/dev/null)"
 rc=$?
 logged="$(cat "$fj_log")"
 assert_rc_zero "fj branch exits zero on successful issue-search count" "$rc"
-assert_eq "fj branch prints jq-derived length" "2" "$out"
-assert_eq "fj branch passes supported issue-search flags in order (JSON-first)" \
-  "-H codeberg.org --style json issue search --repo owner/repo --labels audit:demo --state open" "$logged"
+assert_eq "fj branch prints the minimal-output count" "2" "$out"
+assert_eq "fj branch passes official-compatible issue-search flags in order" \
+  "-H codeberg.org --style minimal issue search --repo owner/repo --labels audit:demo --state open" "$logged"
 
 echo ""
 echo "Test 10: empty FORGE_PROVIDER returns non-zero without invoking a forge CLI"
@@ -564,7 +572,7 @@ assert_eq "tea backlog passes supported issue-list flags without labels" \
   "issues list --repo $FORGE_TEST_PROJECT --remote origin --state open --limit 1000 --output json" "$logged"
 
 echo ""
-echo "Test 12c: fj open backlog snapshot uses host-scoped search and content fields"
+echo "Test 12c: fj open backlog snapshot does not pass invalid JSON style to official fj"
 reset_fake_fj
 fj_log="$TMPDIR/t12c-fj.log"
 err_file="$TMPDIR/t12c.err"
@@ -572,17 +580,18 @@ err_file="$TMPDIR/t12c.err"
 FORGE_HOST=codeberg.org
 REPOLENS_FAKE_FJ_RC=0
 REPOLENS_FAKE_FJ_LOG="$fj_log"
-REPOLENS_FAKE_FJ_STDOUT='{"data":[{"id":9,"title":"FJ backlog","content":"FJ body","labels":[{"Title":"security"},{"name":"greenfield"}],"web_url":"https://codeberg.org/owner/repo/issues/9"}]}'
+REPOLENS_FAKE_FJ_STDOUT=$'1 issue\n#9 FJ backlog'
 out="$(run_wrapper fj forge_open_issue_backlog_snapshot owner/repo 2>"$err_file")"
 rc=$?
 logged="$(cat "$fj_log")"
-assert_rc_zero "fj open backlog snapshot succeeds" "$rc"
-assert_eq "stderr is empty on fj backlog success" "" "$(cat "$err_file")"
-assert_contains "fj backlog snapshot uses id as issue number" "### Open issue #9: FJ backlog" "$out"
-assert_contains "fj backlog snapshot includes content body" "- Body excerpt: FJ body" "$out"
-assert_contains "fj backlog snapshot includes object label names" "- Labels: security, greenfield" "$out"
-assert_eq "fj backlog passes supported issue-search flags without labels" \
-  "-H codeberg.org --style json issue search --repo owner/repo --state open" "$logged"
+assert_rc_nonzero "official fj backlog snapshot fails cleanly when JSON output is unavailable" "$rc"
+assert_eq "stdout is empty when official fj backlog output is not machine-parseable" "" "$out"
+assert_contains "warning identifies the backlog snapshot function" \
+  "forge_open_issue_backlog_snapshot" "$(cat "$err_file")"
+assert_eq "fj backlog snapshot uses official minimal issue search" \
+  "-H codeberg.org --style minimal issue search --repo owner/repo --state open" "$logged"
+assert_not_contains "fj backlog snapshot never asks official fj for invalid JSON style" \
+  "--style json" "$logged"
 
 echo ""
 echo "Test 12d: malformed open backlog JSON fails without a misleading empty snapshot"
