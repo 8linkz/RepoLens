@@ -1,6 +1,7 @@
 logs/
 !prompts/lenses/logs/
 !prompts/lenses/logs/*.md
+tests/.local/
 .semaphore/
 *.tmp
 *.swp

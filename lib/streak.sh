@@ -344,7 +344,7 @@ classify_agent_iteration() {
   stripped="$(strip_ansi < "$file" 2>/dev/null || true)"
   [[ -n "$stripped" ]] || { printf '%s\n' "unknown"; return 0; }
 
-  line="$(printf '%s\n' "$stripped" | grep -iE -m1 'not logged in|please run /login' 2>/dev/null || true)"
+  line="$(printf '%s\n' "$stripped" | grep -iE -m1 'not logged in|please run /login|http error:[[:space:]]*(401|403)[[:space:]]+(unauthorized|forbidden)|http[ /]*(1\.[01][[:space:]]*)?(401|403)[^0-9]*(unauthorized|forbidden)|401[[:space:]]+unauthorized|403[[:space:]]+forbidden|invalid api key|authentication failed' 2>/dev/null || true)"
   if [[ -n "$line" ]]; then
     printf '%s\n' "auth-expired"
     return 0

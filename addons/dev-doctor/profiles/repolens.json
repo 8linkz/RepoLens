@@ -1,0 +1,325 @@
+{
+  "name": "repolens",
+  "description": "Pre-start checks for RepoLens on Linux/WSL/macOS-style shells.",
+  "checks": [
+    {
+      "id": "bash",
+      "command": "bash",
+      "required": true,
+      "health": "bash -lc 'v=${BASH_VERSINFO[0]:-0}; test \"$v\" -ge 4'",
+      "install": {
+        "apt": "bash",
+        "brew": "bash",
+        "hint": "sudo apt-get install -y bash"
+      }
+    },
+    {
+      "id": "git",
+      "command": "git",
+      "required": true,
+      "health": "git --version >/dev/null 2>&1",
+      "install": {
+        "apt": "git",
+        "brew": "git",
+        "winget": "Git.Git",
+        "hint": "sudo apt-get install -y git"
+      }
+    },
+    {
+      "id": "jq",
+      "command": "jq",
+      "required": true,
+      "health": "jq --version >/dev/null 2>&1",
+      "install": {
+        "apt": "jq",
+        "brew": "jq",
+        "winget": "jqlang.jq",
+        "hint": "sudo apt-get install -y jq"
+      }
+    },
+    {
+      "id": "rg",
+      "command": "rg",
+      "required": true,
+      "health": "rg --version >/dev/null 2>&1",
+      "install": {
+        "apt": "ripgrep",
+        "brew": "ripgrep",
+        "winget": "BurntSushi.ripgrep.MSVC",
+        "hint": "sudo apt-get install -y ripgrep"
+      }
+    },
+    {
+      "id": "gitleaks",
+      "command": "gitleaks",
+      "required": true,
+      "health": "\"$DEV_DOCTOR_DIR/install-gitleaks.sh\" --check",
+      "install": {
+        "shell": "\"$DEV_DOCTOR_DIR/install-gitleaks.sh\"",
+        "hint": "bash addons/dev-doctor/install-gitleaks.sh"
+      }
+    },
+    {
+      "id": "go",
+      "command": "go",
+      "required_when": {
+        "project_files": ["go.mod"]
+      },
+      "health": "\"$DEV_DOCTOR_DIR/install-go.sh\" --check --version-from \"$DEV_DOCTOR_PROJECT/go.mod\"",
+      "install": {
+        "shell": "\"$DEV_DOCTOR_DIR/install-go.sh\" --version-from \"$DEV_DOCTOR_PROJECT/go.mod\"",
+        "hint": "bash addons/dev-doctor/install-go.sh --version-from /path/to/go.mod"
+      }
+    },
+    {
+      "id": "govulncheck",
+      "command": "govulncheck",
+      "required_when": {
+        "project_files": ["go.mod"]
+      },
+      "health": "p=$(command -v govulncheck 2>/dev/null) || exit 1; case \"$p\" in /mnt/c/*) exit 1 ;; esac; govulncheck -version >/dev/null 2>&1",
+      "install": {
+        "shell": "mkdir -p \"$HOME/.local/bin\"; PATH=\"$HOME/.local/bin:$PATH\" GOBIN=\"$HOME/.local/bin\" go install golang.org/x/vuln/cmd/govulncheck@latest",
+        "hint": "mkdir -p ~/.local/bin; GOBIN=~/.local/bin go install golang.org/x/vuln/cmd/govulncheck@latest"
+      }
+    },
+    {
+      "id": "trivy",
+      "command": "trivy",
+      "required_when": {
+        "project_files": [
+          "go.sum",
+          "package-lock.json",
+          "yarn.lock",
+          "pnpm-lock.yaml",
+          "Cargo.lock",
+          "poetry.lock",
+          "Pipfile.lock",
+          "requirements.txt",
+          "Gemfile.lock"
+        ]
+      },
+      "health": "\"$DEV_DOCTOR_DIR/install-trivy.sh\" --check",
+      "install": {
+        "shell": "\"$DEV_DOCTOR_DIR/install-trivy.sh\"",
+        "hint": "bash addons/dev-doctor/install-trivy.sh"
+      }
+    },
+    {
+      "id": "gocyclo",
+      "command": "gocyclo",
+      "required_when": {
+        "project_files": ["go.mod"]
+      },
+      "health": "p=$(command -v gocyclo 2>/dev/null) || exit 1; case \"$p\" in /mnt/c/*) exit 1 ;; esac; gocyclo -over 100000 \"$DEV_DOCTOR_PROJECT\" >/dev/null 2>&1",
+      "install": {
+        "shell": "mkdir -p \"$HOME/.local/bin\"; PATH=\"$HOME/.local/bin:$PATH\" GOBIN=\"$HOME/.local/bin\" go install github.com/fzipp/gocyclo/cmd/gocyclo@latest",
+        "hint": "mkdir -p ~/.local/bin; GOBIN=~/.local/bin go install github.com/fzipp/gocyclo/cmd/gocyclo@latest"
+      }
+    },
+    {
+      "id": "golangci-lint",
+      "command": "golangci-lint",
+      "required_when": {
+        "project_files": ["go.mod"]
+      },
+      "health": "p=$(command -v golangci-lint 2>/dev/null) || exit 1; case \"$p\" in /mnt/c/*) exit 1 ;; esac; golangci-lint version >/dev/null 2>&1",
+      "install": {
+        "shell": "mkdir -p \"$HOME/.local/bin\"; PATH=\"$HOME/.local/bin:$PATH\" GOBIN=\"$HOME/.local/bin\" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest",
+        "hint": "mkdir -p ~/.local/bin; GOBIN=~/.local/bin go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest"
+      }
+    },
+    {
+      "id": "errcheck",
+      "command": "errcheck",
+      "required_when": {
+        "project_files": ["go.mod"]
+      },
+      "health": "p=$(command -v errcheck 2>/dev/null) || exit 1; case \"$p\" in /mnt/c/*) exit 1 ;; esac; errcheck -h 2>&1 | grep -q 'Usage of errcheck'",
+      "install": {
+        "shell": "mkdir -p \"$HOME/.local/bin\"; PATH=\"$HOME/.local/bin:$PATH\" GOBIN=\"$HOME/.local/bin\" go install github.com/kisielk/errcheck@latest",
+        "hint": "mkdir -p ~/.local/bin; GOBIN=~/.local/bin go install github.com/kisielk/errcheck@latest"
+      }
+    },
+    {
+      "id": "gosec",
+      "command": "gosec",
+      "required_when": {
+        "project_files": ["go.mod"]
+      },
+      "health": "p=$(command -v gosec 2>/dev/null) || exit 1; case \"$p\" in /mnt/c/*) exit 1 ;; esac; gosec -version >/dev/null 2>&1",
+      "install": {
+        "shell": "mkdir -p \"$HOME/.local/bin\"; PATH=\"$HOME/.local/bin:$PATH\" GOBIN=\"$HOME/.local/bin\" go install github.com/securego/gosec/v2/cmd/gosec@latest",
+        "hint": "mkdir -p ~/.local/bin; GOBIN=~/.local/bin go install github.com/securego/gosec/v2/cmd/gosec@latest"
+      }
+    },
+    {
+      "id": "semgrep",
+      "command": "semgrep",
+      "required_when": {
+        "project_globs": [
+          "**/*.go",
+          "**/*.py",
+          "**/*.js",
+          "**/*.jsx",
+          "**/*.ts",
+          "**/*.tsx",
+          "**/*.java",
+          "**/*.rb",
+          "**/*.php"
+        ]
+      },
+      "health": "\"$DEV_DOCTOR_DIR/install-semgrep.sh\" --check",
+      "install": {
+        "shell": "\"$DEV_DOCTOR_DIR/install-semgrep.sh\"",
+        "hint": "bash addons/dev-doctor/install-semgrep.sh"
+      }
+    },
+    {
+      "id": "shellcheck",
+      "command": "shellcheck",
+      "required_when": {
+        "project_globs": ["**/*.sh"]
+      },
+      "health": "\"$DEV_DOCTOR_DIR/install-shellcheck.sh\" --check",
+      "install": {
+        "shell": "\"$DEV_DOCTOR_DIR/install-shellcheck.sh\"",
+        "hint": "bash addons/dev-doctor/install-shellcheck.sh"
+      }
+    },
+    {
+      "id": "timeout",
+      "command": "timeout",
+      "required": true,
+      "health": "timeout --version 2>/dev/null | grep -qi 'GNU coreutils'",
+      "install": {
+        "apt": "coreutils",
+        "brew": "coreutils",
+        "hint": "sudo apt-get install -y coreutils"
+      }
+    },
+    {
+      "id": "curl",
+      "command": "curl",
+      "optional": true,
+      "health": "curl --version >/dev/null 2>&1",
+      "install": {
+        "apt": "curl",
+        "brew": "curl",
+        "hint": "sudo apt-get install -y curl"
+      }
+    },
+    {
+      "id": "unzip",
+      "command": "unzip",
+      "optional": true,
+      "health": "unzip -v >/dev/null 2>&1",
+      "install": {
+        "apt": "unzip",
+        "brew": "unzip",
+        "hint": "sudo apt-get install -y unzip"
+      }
+    },
+    {
+      "id": "node",
+      "command": "node",
+      "required_when": {
+        "agent": ["opencode", "opencode/*"]
+      },
+      "health": "node --version >/dev/null 2>&1",
+      "install": {
+        "apt": "nodejs npm",
+        "brew": "node",
+        "winget": "OpenJS.NodeJS.LTS",
+        "hint": "sudo apt-get install -y nodejs npm"
+      }
+    },
+    {
+      "id": "npm",
+      "command": "npm",
+      "required_when": {
+        "agent": ["opencode", "opencode/*"]
+      },
+      "health": "npm --version >/dev/null 2>&1",
+      "install": {
+        "apt": "npm",
+        "brew": "node",
+        "winget": "OpenJS.NodeJS.LTS",
+        "hint": "sudo apt-get install -y npm"
+      }
+    },
+    {
+      "id": "codex",
+      "command": "codex",
+      "required_when": {
+        "agent": ["codex", "spark", "sparc"]
+      },
+      "health": "p=$(command -v codex 2>/dev/null) || exit 1; case \"$p\" in /mnt/c/*) exit 1 ;; esac; codex --version >/dev/null 2>&1 && codex login status >/dev/null 2>&1",
+      "install": {
+        "shell": "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
+        "hint": "curl -fsSL https://chatgpt.com/codex/install.sh | sh; then run codex login"
+      }
+    },
+    {
+      "id": "claude",
+      "command": "claude",
+      "required_when": {
+        "agent": ["claude"]
+      },
+      "health": "claude --version >/dev/null 2>&1",
+      "install": {
+        "npm_global": "@anthropic-ai/claude-code",
+        "hint": "npm install -g @anthropic-ai/claude-code"
+      }
+    },
+    {
+      "id": "opencode",
+      "command": "opencode",
+      "required_when": {
+        "agent": ["opencode", "opencode/*"]
+      },
+      "health": "opencode --version >/dev/null 2>&1",
+      "install": {
+        "npm_global": "opencode-ai",
+        "hint": "npm install -g opencode-ai"
+      }
+    },
+    {
+      "id": "gh",
+      "command": "gh",
+      "required_when": {
+        "not_local": true
+      },
+      "health": "gh --version >/dev/null 2>&1",
+      "install": {
+        "apt": "gh",
+        "brew": "gh",
+        "winget": "GitHub.cli",
+        "hint": "sudo apt-get install -y gh"
+      }
+    },
+    {
+      "id": "docker",
+      "command": "docker",
+      "optional": true,
+      "health": "docker --version >/dev/null 2>&1",
+      "install": {
+        "apt": "docker.io",
+        "brew": "docker",
+        "winget": "Docker.DockerDesktop",
+        "hint": "Install Docker only when you use RepoLens --hosted."
+      }
+    },
+    {
+      "id": "adb",
+      "command": "adb",
+      "optional": true,
+      "health": "adb version >/dev/null 2>&1",
+      "install": {
+        "apt": "android-tools-adb",
+        "brew": "android-platform-tools",
+        "hint": "Install Android platform tools only for Android deploy lenses."
+      }
+    }
+  ]
+}
