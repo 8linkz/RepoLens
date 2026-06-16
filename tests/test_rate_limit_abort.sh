@@ -91,7 +91,7 @@ mkdir -p "$PROJECT"
 ) || true
 
 # Fake agent: emits the exact Claude user-tier rate-limit string and exits non-zero.
-# repolens.sh's run_agent invokes `codex exec --yolo <prompt>`; the stub
+# repolens.sh's run_agent invokes `codex exec <autonomy-flag> <prompt>`; the stub
 # ignores all args and just prints the signature.
 FAKE_BIN="$TMPDIR/bin"
 mkdir -p "$FAKE_BIN"

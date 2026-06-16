@@ -20,7 +20,7 @@
 #   role line to that file.
 # - REPOLENS_MOCK_AGENT_FINDINGS defaults to 1 and may be set to 2.
 # - The prompt is read from REPOLENS_MOCK_PROMPT_FILE, stdin, or the last CLI
-#   argument. This matches `codex exec --yolo "$prompt"` in lib/core.sh while
+#   argument. This matches `codex exec <autonomy-flag> "$prompt"` in lib/core.sh while
 #   remaining reusable for direct test invocations.
 # - Lens prompts in local mode must contain the rendered "Write all findings
 #   to:" output directory. The mock writes deterministic markdown findings

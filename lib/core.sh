@@ -250,6 +250,7 @@ run_agent() {
   local timeout_secs="${4:-}"
   local kill_grace_secs="${5:-${REPOLENS_AGENT_KILL_GRACE:-30}}"
   local envelope_file="${6:-${REPOLENS_AGENT_ENVELOPE_FILE:-}}"
+  local codex_autonomy_flag=""
 
   if [[ -z "$timeout_secs" ]]; then
     timeout_secs="$(resolve_agent_timeout "${MODE:-audit}" "$agent")"
@@ -259,6 +260,12 @@ run_agent() {
   if [[ ! "$kill_grace_secs" =~ ^[0-9]+$ || "$kill_grace_secs" -le 0 ]]; then
     die "REPOLENS_AGENT_KILL_GRACE must be a positive integer number of seconds"
   fi
+
+  case "$agent" in
+    codex|spark|sparc)
+      codex_autonomy_flag="${REPOLENS_CODEX_AUTONOMY_FLAG:---dangerously-bypass-approvals-and-sandbox}"
+      ;;
+  esac
 
   (
     cd "$project_path" || die "Failed to cd into: $project_path"
@@ -297,10 +304,10 @@ run_agent() {
         return "$rc"
         ;;
       codex)
-        timeout --kill-after="${kill_grace_secs}s" "${timeout_secs}s" codex exec --yolo "$prompt"
+        timeout --kill-after="${kill_grace_secs}s" "${timeout_secs}s" codex exec "$codex_autonomy_flag" "$prompt"
         ;;
       spark|sparc)
-        timeout --kill-after="${kill_grace_secs}s" "${timeout_secs}s" codex exec --yolo -m gpt-5.3-codex-spark -c reasoning_effort="xhigh" "$prompt"
+        timeout --kill-after="${kill_grace_secs}s" "${timeout_secs}s" codex exec "$codex_autonomy_flag" -m gpt-5.3-codex-spark -c reasoning_effort="xhigh" "$prompt"
         ;;
       opencode)
         timeout --kill-after="${kill_grace_secs}s" "${timeout_secs}s" opencode run "$prompt"
